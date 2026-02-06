@@ -9,8 +9,19 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig `yaml:"server"`
-	Engine EngineConfig `yaml:"engine"`
+	Server  ServerConfig  `yaml:"server"`
+	Engine  EngineConfig  `yaml:"engine"`
+	Storage StorageConfig `yaml:"storage"`
+}
+
+type StorageConfig struct {
+	Type  string      `yaml:"type"`  // "memory" (default) or "redis"
+	Redis RedisConfig `yaml:"redis"` // Redis-specific settings
+}
+
+type RedisConfig struct {
+	Addr     string `yaml:"addr"`
+	PoolSize int    `yaml:"pool_size"`
 }
 
 type ServerConfig struct {
@@ -85,6 +96,17 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("RLQS_REPORTING_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Engine.ReportingInterval = Duration{d}
+		}
+	}
+	if v := os.Getenv("RLQS_STORAGE_TYPE"); v != "" {
+		cfg.Storage.Type = v
+	}
+	if v := os.Getenv("RLQS_STORAGE_REDIS_ADDR"); v != "" {
+		cfg.Storage.Redis.Addr = v
+	}
+	if v := os.Getenv("RLQS_STORAGE_REDIS_POOL_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Storage.Redis.PoolSize = n
 		}
 	}
 

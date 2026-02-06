@@ -22,6 +22,26 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+// buildStore creates a BucketStore from the configuration.
+// Defaults to in-memory; supports "redis" for Redis-backed storage.
+func buildStore(cfg *config.Config, logger *zap.Logger) storage.BucketStore {
+	switch cfg.Storage.Type {
+	case "redis":
+		logger.Info("using redis storage backend",
+			zap.String("addr", cfg.Storage.Redis.Addr),
+			zap.Int("pool_size", cfg.Storage.Redis.PoolSize),
+		)
+		return storage.NewRedisStorage(storage.RedisConfig{
+			Addr:     cfg.Storage.Redis.Addr,
+			PoolSize: cfg.Storage.Redis.PoolSize,
+			KeyTTL:   cfg.Engine.ReportingInterval.Duration * 6,
+		})
+	default:
+		logger.Info("using in-memory storage backend")
+		return storage.NewMemoryStorage()
+	}
+}
+
 // buildEngine creates a quota engine from the configuration.
 // If policies are defined, returns an Engine; otherwise returns DefaultEngine.
 func buildEngine(cfg *config.Config) quota.Engine {
@@ -92,7 +112,7 @@ func main() {
 		logger.Fatal("failed to load config", zap.Error(err))
 	}
 
-	store := storage.NewMemoryStorage()
+	store := buildStore(cfg, logger)
 	eng := buildEngine(cfg)
 
 	srv := server.New(logger, store, eng, server.DefaultServerOptions(logger)...)

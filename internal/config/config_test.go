@@ -75,6 +75,59 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadStorageYAML(t *testing.T) {
+	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	_, err = f.WriteString(`storage:
+  type: redis
+  redis:
+    addr: "localhost:6379"
+    pool_size: 20
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.Type != "redis" {
+		t.Fatalf("expected redis, got %s", cfg.Storage.Type)
+	}
+	if cfg.Storage.Redis.Addr != "localhost:6379" {
+		t.Fatalf("expected localhost:6379, got %s", cfg.Storage.Redis.Addr)
+	}
+	if cfg.Storage.Redis.PoolSize != 20 {
+		t.Fatalf("expected 20, got %d", cfg.Storage.Redis.PoolSize)
+	}
+}
+
+func TestLoadStorageEnvOverrides(t *testing.T) {
+	t.Setenv("RLQS_STORAGE_TYPE", "redis")
+	t.Setenv("RLQS_STORAGE_REDIS_ADDR", "redis.example.com:6379")
+	t.Setenv("RLQS_STORAGE_REDIS_POOL_SIZE", "50")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.Type != "redis" {
+		t.Fatalf("expected redis, got %s", cfg.Storage.Type)
+	}
+	if cfg.Storage.Redis.Addr != "redis.example.com:6379" {
+		t.Fatalf("expected redis.example.com:6379, got %s", cfg.Storage.Redis.Addr)
+	}
+	if cfg.Storage.Redis.PoolSize != 50 {
+		t.Fatalf("expected 50, got %d", cfg.Storage.Redis.PoolSize)
+	}
+}
+
 func TestLoadEnvOverridesYAML(t *testing.T) {
 	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
 	if err != nil {
