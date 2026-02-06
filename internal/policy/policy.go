@@ -66,8 +66,8 @@ func (p *Policy) matches(domain string, bucketKey storage.BucketKey) bool {
 	return true
 }
 
-// PolicyEngineConfig holds configuration for the PolicyEngine.
-type PolicyEngineConfig struct {
+// EngineConfig holds configuration for the Engine.
+type EngineConfig struct {
 	// Policies is a list of policies to match against, in priority order.
 	// The first matching policy is used.
 	Policies []Policy
@@ -76,20 +76,20 @@ type PolicyEngineConfig struct {
 	DefaultPolicy Policy
 }
 
-// PolicyEngine implements the quota.Engine interface, selecting policies
+// Engine implements the quota.Engine interface, selecting policies
 // based on domain and bucket key patterns.
-type PolicyEngine struct {
-	cfg PolicyEngineConfig
+type Engine struct {
+	cfg EngineConfig
 }
 
-// NewPolicyEngine creates a PolicyEngine with the given configuration.
-func NewPolicyEngine(cfg PolicyEngineConfig) *PolicyEngine {
-	return &PolicyEngine{cfg: cfg}
+// New creates an Engine with the given configuration.
+func New(cfg EngineConfig) *Engine {
+	return &Engine{cfg: cfg}
 }
 
 // ProcessUsage evaluates usage reports and returns quota assignment actions
 // based on matched policies.
-func (e *PolicyEngine) ProcessUsage(_ context.Context, domain string, reports []storage.UsageReport) ([]*rlqspb.RateLimitQuotaResponse_BucketAction, error) {
+func (e *Engine) ProcessUsage(_ context.Context, domain string, reports []storage.UsageReport) ([]*rlqspb.RateLimitQuotaResponse_BucketAction, error) {
 	if len(reports) == 0 {
 		return nil, nil
 	}

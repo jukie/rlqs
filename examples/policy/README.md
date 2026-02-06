@@ -13,7 +13,7 @@ The `rlqs-config.yaml` defines multiple policies that are matched in order:
 
 ## How It Works
 
-The `PolicyEngine` evaluates each usage report against the configured policies:
+The `policy.Engine` evaluates each usage report against the configured policies:
 
 1. For each bucket, it checks policies in order from top to bottom
 2. The first policy whose `domain_pattern` AND `bucket_key_pattern` both match is selected

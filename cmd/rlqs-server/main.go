@@ -23,7 +23,7 @@ import (
 )
 
 // buildEngine creates a quota engine from the configuration.
-// If policies are defined, returns a PolicyEngine; otherwise returns DefaultEngine.
+// If policies are defined, returns an Engine; otherwise returns DefaultEngine.
 func buildEngine(cfg *config.Config) quota.Engine {
 	defaultStrategy := &typev3.RateLimitStrategy{
 		Strategy: &typev3.RateLimitStrategy_TokenBucket{
@@ -44,7 +44,7 @@ func buildEngine(cfg *config.Config) quota.Engine {
 		})
 	}
 
-	// Build PolicyEngine from config
+	// Build Engine from config
 	policies := make([]policy.Policy, 0, len(cfg.Engine.Policies))
 	for _, pc := range cfg.Engine.Policies {
 		ttl := pc.AssignmentTTL.Duration
@@ -68,7 +68,7 @@ func buildEngine(cfg *config.Config) quota.Engine {
 		})
 	}
 
-	return policy.NewPolicyEngine(policy.PolicyEngineConfig{
+	return policy.New(policy.EngineConfig{
 		Policies: policies,
 		DefaultPolicy: policy.Policy{
 			Strategy:      defaultStrategy,

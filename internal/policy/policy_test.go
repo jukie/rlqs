@@ -102,7 +102,7 @@ func TestPolicyMatches(t *testing.T) {
 	}
 }
 
-func TestPolicyEngineProcessUsage(t *testing.T) {
+func TestEngineProcessUsage(t *testing.T) {
 	// Create test strategies
 	strategy100 := &typev3.RateLimitStrategy{
 		Strategy: &typev3.RateLimitStrategy_TokenBucket{
@@ -124,7 +124,7 @@ func TestPolicyEngineProcessUsage(t *testing.T) {
 		},
 	}
 
-	engine := NewPolicyEngine(PolicyEngineConfig{
+	engine := New(EngineConfig{
 		Policies: []Policy{
 			{
 				DomainPattern:    "^api\\.",
