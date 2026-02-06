@@ -1,0 +1,28 @@
+server:
+  grpc_addr: ":18081"
+
+engine:
+  # Default RPS for buckets that don't match any policy
+  default_rps: 100
+
+  reporting_interval: "10s"
+
+  # Policy-based rate limiting: first match wins
+  policies:
+    # API endpoints get higher limits
+    - domain_pattern: "^api\\."
+      bucket_key_pattern: ""
+      rps: 1000
+      assignment_ttl: "20s"
+
+    # Premium users get special treatment
+    - domain_pattern: ""
+      bucket_key_pattern: "tier\x00premium"
+      rps: 5000
+      assignment_ttl: "30s"
+
+    # Internal services get very high limits
+    - domain_pattern: "^internal\\."
+      bucket_key_pattern: ""
+      rps: 10000
+      assignment_ttl: "60s"

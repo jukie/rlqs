@@ -36,8 +36,17 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type EngineConfig struct {
-	DefaultRPS        uint64   `yaml:"default_rps"`
-	ReportingInterval Duration `yaml:"reporting_interval"`
+	DefaultRPS        uint64         `yaml:"default_rps"`
+	ReportingInterval Duration       `yaml:"reporting_interval"`
+	Policies          []PolicyConfig `yaml:"policies"`
+}
+
+// PolicyConfig defines a rate limiting policy in YAML.
+type PolicyConfig struct {
+	DomainPattern    string   `yaml:"domain_pattern"`
+	BucketKeyPattern string   `yaml:"bucket_key_pattern"`
+	RPS              uint64   `yaml:"rps"`
+	AssignmentTTL    Duration `yaml:"assignment_ttl"`
 }
 
 func Load(path string) (*Config, error) {
