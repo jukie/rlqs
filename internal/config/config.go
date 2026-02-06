@@ -14,7 +14,8 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	GRPCAddr string `yaml:"grpc_addr"`
+	GRPCAddr    string `yaml:"grpc_addr"`
+	MetricsAddr string `yaml:"metrics_addr"`
 }
 
 type Duration struct {
@@ -42,7 +43,8 @@ type EngineConfig struct {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			GRPCAddr: ":18081",
+			GRPCAddr:    ":18081",
+			MetricsAddr: ":9090",
 		},
 		Engine: EngineConfig{
 			DefaultRPS:        100,
@@ -62,6 +64,9 @@ func Load(path string) (*Config, error) {
 
 	if v := os.Getenv("RLQS_GRPC_ADDR"); v != "" {
 		cfg.Server.GRPCAddr = v
+	}
+	if v := os.Getenv("RLQS_METRICS_ADDR"); v != "" {
+		cfg.Server.MetricsAddr = v
 	}
 	if v := os.Getenv("RLQS_DEFAULT_RPS"); v != "" {
 		if rps, err := strconv.ParseUint(v, 10, 64); err == nil {

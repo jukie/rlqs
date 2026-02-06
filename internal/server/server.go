@@ -5,11 +5,14 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
+	"github.com/jukie/rlqs/internal/metrics"
 	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/storage"
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -112,7 +115,11 @@ func (s *RLQSServer) StreamRateLimitQuotas(stream rlqspb.RateLimitQuotaService_S
 	s.streams[ss] = struct{}{}
 	s.mu.Unlock()
 
-	defer s.cleanupStream(ss)
+	metrics.ActiveStreams.Inc()
+	defer func() {
+		metrics.ActiveStreams.Dec()
+		s.cleanupStream(ss)
+	}()
 
 	s.logger.Debug("stream opened")
 
@@ -175,6 +182,7 @@ func (s *RLQSServer) handleMessage(
 		// Track subscription — first report for a bucket is the subscription signal.
 		if _, exists := ss.subscriptions[key]; !exists {
 			ss.subscriptions[key] = struct{}{}
+			metrics.ActiveBuckets.WithLabelValues(ss.domain).Inc()
 			s.logger.Debug("bucket subscribed",
 				zap.String("domain", ss.domain),
 				zap.String("bucket_key", string(key)))
@@ -197,8 +205,13 @@ func (s *RLQSServer) handleMessage(
 		reports = append(reports, report)
 	}
 
-	// Consult the quota engine.
+	// Track usage reports processed.
+	metrics.UsageReportsTotal.WithLabelValues(ss.domain).Add(float64(len(reports)))
+
+	// Consult the quota engine and track duration.
+	start := time.Now()
 	actions, err := s.engine.ProcessUsage(ctx, ss.domain, reports)
+	metrics.EngineDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		s.logger.Error("engine error", zap.String("domain", ss.domain), zap.Error(err))
 		return status.Errorf(codes.Internal, "quota engine error: %v", err)
@@ -208,11 +221,13 @@ func (s *RLQSServer) handleMessage(
 		return nil
 	}
 
-	// Track abandon actions — remove from subscriptions.
+	// Track assignments and abandon actions.
+	metrics.AssignmentsTotal.WithLabelValues(ss.domain).Add(float64(len(actions)))
 	for _, a := range actions {
 		if a.GetAbandonAction() != nil {
 			key := storage.BucketKeyFromProto(a.GetBucketId())
 			delete(ss.subscriptions, key)
+			metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
 			s.logger.Debug("bucket abandoned",
 				zap.String("domain", ss.domain),
 				zap.String("bucket_key", string(key)))
@@ -245,6 +260,7 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 		zap.Int("subscriptions", len(ss.subscriptions)))
 
 	for key := range ss.subscriptions {
+		metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
 		if err := s.store.RemoveBucket(context.Background(), ss.domain, key); err != nil {
 			s.logger.Error("failed to remove bucket on disconnect",
 				zap.String("domain", ss.domain),
@@ -254,12 +270,16 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 	}
 }
 
-// DefaultServerOptions returns the standard set of server options with recovery and logging.
+// DefaultServerOptions returns the standard set of server options with recovery, logging, and Prometheus metrics.
 func DefaultServerOptions(logger *zap.Logger) []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.ChainStreamInterceptor(
+			grpc_prometheus.StreamServerInterceptor,
 			loggingStreamInterceptor(logger),
 			recoveryStreamInterceptor(logger),
+		),
+		grpc.ChainUnaryInterceptor(
+			grpc_prometheus.UnaryServerInterceptor,
 		),
 	}
 }
@@ -279,6 +299,9 @@ func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, opt
 
 	Register(grpcSrv, logger, store, engine)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
+
+	// Initialize gRPC Prometheus metrics.
+	grpc_prometheus.Register(grpcSrv)
 
 	return &Server{
 		grpcServer:   grpcSrv,
