@@ -12,6 +12,17 @@ linters:
     - ineffassign
     - misspell
     - revive
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+      - source: "defer.*\\.Sync\\("
+        linters:
+          - errcheck
   settings:
     revive:
       rules:

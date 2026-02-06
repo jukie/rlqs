@@ -87,7 +87,7 @@ func setup(t *testing.T) *testEnv {
 
 func (e *testEnv) teardown() {
 	e.conn.Close()
-	e.srv.Stop()
+	e.srv.GracefulStop()
 }
 
 func bucketID(kvs ...string) *rlqspb.BucketId {
