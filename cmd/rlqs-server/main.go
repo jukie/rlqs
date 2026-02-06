@@ -286,7 +286,7 @@ func main() {
 					}
 
 					// Collect restart-required changes for the admin endpoint.
-					var restartChanges []config.ConfigChange
+					var restartChanges []config.Change
 					for _, c := range changes {
 						if c.Scope == config.ScopeRequiresRestart {
 							restartChanges = append(restartChanges, c)

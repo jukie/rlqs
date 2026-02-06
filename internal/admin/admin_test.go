@@ -141,7 +141,7 @@ func TestDebugConfig(t *testing.T) {
 
 func TestDebugConfigWithPendingRestartChanges(t *testing.T) {
 	h := newTestHandler(nil, storage.NewMemoryStorage())
-	h.SetPendingRestartChanges([]config.ConfigChange{
+	h.SetPendingRestartChanges([]config.Change{
 		{Section: "server", Scope: config.ScopeRequiresRestart},
 		{Section: "storage", Scope: config.ScopeRequiresRestart},
 	})

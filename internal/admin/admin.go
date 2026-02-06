@@ -27,7 +27,7 @@ type Handler struct {
 	cfg         *config.Config
 
 	mu                    sync.RWMutex
-	pendingRestartChanges []config.ConfigChange
+	pendingRestartChanges []config.Change
 }
 
 // New creates an admin handler.
@@ -107,7 +107,7 @@ func (h *Handler) handleDebugBuckets(w http.ResponseWriter, r *http.Request) {
 
 // SetPendingRestartChanges records config sections that changed on reload
 // but require a restart to take effect.
-func (h *Handler) SetPendingRestartChanges(changes []config.ConfigChange) {
+func (h *Handler) SetPendingRestartChanges(changes []config.Change) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.pendingRestartChanges = changes
@@ -120,8 +120,8 @@ func (h *Handler) handleDebugConfig(w http.ResponseWriter, _ *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	resp := struct {
-		Config                *config.Config        `json:"config"`
-		PendingRestartChanges []config.ConfigChange `json:"pending_restart_changes,omitempty"`
+		Config                *config.Config  `json:"config"`
+		PendingRestartChanges []config.Change `json:"pending_restart_changes,omitempty"`
 	}{
 		Config:                h.cfg,
 		PendingRestartChanges: pending,

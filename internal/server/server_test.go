@@ -368,6 +368,17 @@ func TestCleanupSharedBucketPreservesStorage(t *testing.T) {
 
 	bid := bucketID("name", "shared")
 
+	// Engine returns an assignment so we can Recv() to confirm the server
+	// has processed each subscription before proceeding.
+	env.engine.actions = []*rlqspb.RateLimitQuotaResponse_BucketAction{
+		{
+			BucketId: bid,
+			BucketAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction_{
+				QuotaAssignmentAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{},
+			},
+		},
+	}
+
 	// Stream 1 subscribes to the bucket.
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel1()
@@ -381,6 +392,9 @@ func TestCleanupSharedBucketPreservesStorage(t *testing.T) {
 		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream1.Recv(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -397,6 +411,11 @@ func TestCleanupSharedBucketPreservesStorage(t *testing.T) {
 		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 20, 0)},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait for server to process stream2's subscription — ensures bucketRefs
+	// is 2 before we disconnect stream1.
+	if _, err := stream2.Recv(); err != nil {
 		t.Fatal(err)
 	}
 
