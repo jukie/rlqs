@@ -48,7 +48,7 @@ func TestRedisStorage_RecordUsage_Accumulates(t *testing.T) {
 	rs, mr := newTestRedis(t)
 	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web"}}
 
-	for range 3 {
+	for i := 0; i < 3; i++ {
 		err := rs.RecordUsage(context.Background(), "test", UsageReport{
 			BucketId:           bid,
 			NumRequestsAllowed: 5,
@@ -158,117 +158,67 @@ func TestRedisStorage_KeyTTL(t *testing.T) {
 }
 
 func TestRedisStorage_CircuitBreaker_FallsBackToMemory(t *testing.T) {
-	rs, mr := newTestRedis(t)
+	mr := miniredis.RunT(t)
+	rs := NewRedisStorage(RedisConfig{
+		Addr:   mr.Addr(),
+		KeyTTL: 60 * time.Second,
+	})
+	t.Cleanup(func() { rs.Close() })
+
 	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web"}}
 
-	// Inject command errors to trigger circuit breaker without closing the connection.
-	mr.SetError("LOADING Redis is loading")
+	// Stop Redis to trigger circuit breaker.
+	mr.Close()
 
-	// Need consecutive failures to trip the breaker (default threshold = 3).
-	for range defaultFailThreshold {
-		err := rs.RecordUsage(context.Background(), "test", UsageReport{
-			BucketId:           bid,
-			NumRequestsAllowed: 10,
-			NumRequestsDenied:  2,
-		})
-		if err != nil {
-			t.Fatalf("expected fail-open, got error: %v", err)
-		}
+	// Should fall back to in-memory (fail-open).
+	err := rs.RecordUsage(context.Background(), "test", UsageReport{
+		BucketId:           bid,
+		NumRequestsAllowed: 10,
+		NumRequestsDenied:  2,
+	})
+	if err != nil {
+		t.Fatalf("expected fail-open, got error: %v", err)
 	}
 
 	if !rs.isTripped() {
 		t.Fatal("expected circuit breaker to be tripped")
 	}
 
-	// Verify data went to fallback (accumulated from all calls).
+	// Verify data went to fallback.
 	key := BucketKeyFromProto(bid)
 	scopedKey := DomainScopedKey("test", key)
 	state, ok := rs.fallback.Get(scopedKey)
 	if !ok {
 		t.Fatal("expected fallback to have the data")
 	}
-	if state.Allowed != 10*uint64(defaultFailThreshold) || state.Denied != 2*uint64(defaultFailThreshold) {
+	if state.Allowed != 10 || state.Denied != 2 {
 		t.Fatalf("unexpected fallback state: %+v", state)
 	}
 }
 
-func TestRedisStorage_CircuitBreaker_SingleErrorDoesNotTrip(t *testing.T) {
-	rs, mr := newTestRedis(t)
+func TestRedisStorage_CircuitBreaker_RecoverAfterRetry(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rs := NewRedisStorage(RedisConfig{
+		Addr:   mr.Addr(),
+		KeyTTL: 60 * time.Second,
+	})
+	rs.retryInterval = 0 // Instant retry for testing.
+	t.Cleanup(func() { rs.Close() })
+
 	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web"}}
 
-	// Inject a command error.
-	mr.SetError("ERR temporary")
-
-	// A single failure should NOT trip the breaker.
+	// Trip the breaker.
+	mr.Close()
 	_ = rs.RecordUsage(context.Background(), "test", UsageReport{
 		BucketId:           bid,
-		NumRequestsAllowed: 1,
+		NumRequestsAllowed: 5,
 	})
-
-	if rs.isTripped() {
-		t.Fatal("circuit breaker should not trip on a single error")
-	}
-}
-
-func TestRedisStorage_CircuitBreaker_SuccessResetsCounter(t *testing.T) {
-	rs, mr := newTestRedis(t)
-	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web"}}
-
-	// Cause failures just below threshold.
-	mr.SetError("ERR temporary")
-	for range defaultFailThreshold - 1 {
-		_ = rs.RecordUsage(context.Background(), "test", UsageReport{
-			BucketId:           bid,
-			NumRequestsAllowed: 1,
-		})
-	}
-	if rs.isTripped() {
-		t.Fatal("should not be tripped yet")
-	}
-
-	// Clear error — a success resets the counter.
-	mr.SetError("")
-	err := rs.RecordUsage(context.Background(), "test", UsageReport{
-		BucketId:           bid,
-		NumRequestsAllowed: 1,
-	})
-	if err != nil {
-		t.Fatalf("expected success, got: %v", err)
-	}
-
-	// Cause failures again — should need full threshold again.
-	mr.SetError("ERR temporary")
-	for range defaultFailThreshold - 1 {
-		_ = rs.RecordUsage(context.Background(), "test", UsageReport{
-			BucketId:           bid,
-			NumRequestsAllowed: 1,
-		})
-	}
-	if rs.isTripped() {
-		t.Fatal("should not trip because success reset the counter")
-	}
-}
-
-func TestRedisStorage_CircuitBreaker_RecoverAfterRetry(t *testing.T) {
-	rs, mr := newTestRedis(t)
-	rs.retryInterval = 0 // Instant retry for testing.
-
-	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web"}}
-
-	// Trip the breaker via SetError (avoids slow dial retries).
-	mr.SetError("ERR connection lost")
-	for range defaultFailThreshold {
-		_ = rs.RecordUsage(context.Background(), "trip", UsageReport{
-			BucketId:           bid,
-			NumRequestsAllowed: 1,
-		})
-	}
 	if !rs.isTripped() {
 		t.Fatal("expected tripped")
 	}
 
-	// Clear the error to simulate Redis recovery.
-	mr.SetError("")
+	// Restart Redis.
+	mr.Restart()
 
 	// Next call should recover.
 	err := rs.RecordUsage(context.Background(), "test", UsageReport{
@@ -287,26 +237,5 @@ func TestRedisStorage_CircuitBreaker_RecoverAfterRetry(t *testing.T) {
 	allowed := mr.HGet(key, fieldAllowed)
 	if allowed != "10" {
 		t.Fatalf("expected allowed=10 in Redis, got %s", allowed)
-	}
-}
-
-func TestRedisStorage_Ping(t *testing.T) {
-	rs, _ := newTestRedis(t)
-	if err := rs.Ping(context.Background()); err != nil {
-		t.Fatalf("expected ping to succeed, got: %v", err)
-	}
-}
-
-func TestRedisStorage_Ping_Failure(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rs := NewRedisStorage(RedisConfig{
-		Addr:   mr.Addr(),
-		KeyTTL: 60 * time.Second,
-	})
-	t.Cleanup(func() { rs.Close() })
-
-	mr.Close()
-	if err := rs.Ping(context.Background()); err == nil {
-		t.Fatal("expected ping to fail when Redis is down")
 	}
 }

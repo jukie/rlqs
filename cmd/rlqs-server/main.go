@@ -34,11 +34,9 @@ func buildStore(cfg *config.Config, logger *zap.Logger) storage.BucketStore {
 			zap.Int("pool_size", cfg.Storage.Redis.PoolSize),
 		)
 		return storage.NewRedisStorage(storage.RedisConfig{
-			Addr:         cfg.Storage.Redis.Addr,
-			PoolSize:     cfg.Storage.Redis.PoolSize,
-			KeyTTL:       cfg.Engine.ReportingInterval.Duration * 6,
-			ReadTimeout:  cfg.Storage.Redis.ReadTimeout.Duration,
-			WriteTimeout: cfg.Storage.Redis.WriteTimeout.Duration,
+			Addr:     cfg.Storage.Redis.Addr,
+			PoolSize: cfg.Storage.Redis.PoolSize,
+			KeyTTL:   cfg.Engine.ReportingInterval.Duration * 6,
 		})
 	default:
 		logger.Info("using in-memory storage backend")
@@ -154,17 +152,6 @@ func main() {
 	}
 
 	store := buildStore(cfg, logger)
-
-	// Verify Redis connectivity on startup to catch misconfigurations early.
-	if rs, ok := store.(*storage.RedisStorage); ok {
-		if err := rs.Ping(context.Background()); err != nil {
-			logger.Fatal("redis ping failed on startup — check address and connectivity",
-				zap.String("addr", cfg.Storage.Redis.Addr),
-				zap.Error(err))
-		}
-		logger.Info("redis connectivity verified")
-	}
-
 	eng, err := buildEngine(cfg)
 	if err != nil {
 		logger.Fatal("failed to build quota engine", zap.Error(err))
@@ -251,14 +238,19 @@ func main() {
 		logger.Error("metrics server shutdown error", zap.Error(err))
 	}
 
-	srv.GracefulStop()
+	// GracefulStop blocks until all streams close. Run it in a goroutine
+	// with a deadline so we fall back to forceful Stop if it hangs.
+	stopped := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(stopped)
+	}()
 
-	// Close the storage backend (e.g. Redis connections).
-	if closer, ok := store.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil {
-			logger.Error("storage close error", zap.Error(err))
-		}
+	select {
+	case <-stopped:
+		logger.Info("server stopped gracefully")
+	case <-shutdownCtx.Done():
+		logger.Warn("graceful shutdown timed out, forcing stop")
+		srv.Stop()
 	}
-
-	logger.Info("server stopped")
 }

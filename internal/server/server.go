@@ -485,6 +485,11 @@ func (s *Server) GracefulStop() {
 	s.grpcServer.GracefulStop()
 }
 
+// Stop forcefully stops the gRPC server without waiting for active streams.
+func (s *Server) Stop() {
+	s.grpcServer.Stop()
+}
+
 // GRPCServer returns the underlying grpc.Server (for testing).
 func (s *Server) GRPCServer() *grpc.Server {
 	return s.grpcServer
