@@ -16,7 +16,7 @@ services:
       start_period: 5s
 
   envoy:
-    image: envoyproxy/envoy:v1.32-latest
+    image: envoyproxy/envoy:v1.33-latest
     command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
     volumes:
       - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
