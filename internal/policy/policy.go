@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"time"
 
@@ -32,41 +33,39 @@ type Policy struct {
 	// DenyResponse holds optional deny response customization for this policy.
 	DenyResponse *config.DenyResponseConfig
 
-	// compiled regex patterns (cached after first use)
+	// compiled regex patterns (pre-compiled during New())
 	domainRegex    *regexp.Regexp
 	bucketKeyRegex *regexp.Regexp
 }
 
+// compilePatterns pre-compiles regex patterns. Must be called before concurrent use.
+func (p *Policy) compilePatterns() error {
+	if p.DomainPattern != "" {
+		r, err := regexp.Compile(p.DomainPattern)
+		if err != nil {
+			return fmt.Errorf("invalid domain pattern %q: %w", p.DomainPattern, err)
+		}
+		p.domainRegex = r
+	}
+	if p.BucketKeyPattern != "" {
+		r, err := regexp.Compile(p.BucketKeyPattern)
+		if err != nil {
+			return fmt.Errorf("invalid bucket key pattern %q: %w", p.BucketKeyPattern, err)
+		}
+		p.bucketKeyRegex = r
+	}
+	return nil
+}
+
 // matches checks if this policy matches the given domain and bucket key.
+// Regexes must be pre-compiled via compilePatterns before calling matches.
 func (p *Policy) matches(domain string, bucketKey storage.BucketKey) bool {
-	// Lazy compile domain pattern
-	if p.DomainPattern != "" && p.domainRegex == nil {
-		var err error
-		p.domainRegex, err = regexp.Compile(p.DomainPattern)
-		if err != nil {
-			return false
-		}
-	}
-
-	// Lazy compile bucket key pattern
-	if p.BucketKeyPattern != "" && p.bucketKeyRegex == nil {
-		var err error
-		p.bucketKeyRegex, err = regexp.Compile(p.BucketKeyPattern)
-		if err != nil {
-			return false
-		}
-	}
-
-	// Check domain match
 	if p.domainRegex != nil && !p.domainRegex.MatchString(domain) {
 		return false
 	}
-
-	// Check bucket key match
 	if p.bucketKeyRegex != nil && !p.bucketKeyRegex.MatchString(string(bucketKey)) {
 		return false
 	}
-
 	return true
 }
 
@@ -86,9 +85,18 @@ type Engine struct {
 	cfg EngineConfig
 }
 
-// New creates an Engine with the given configuration.
-func New(cfg EngineConfig) *Engine {
-	return &Engine{cfg: cfg}
+// New creates an Engine with the given configuration. All regex patterns
+// are pre-compiled to avoid data races during concurrent use.
+func New(cfg EngineConfig) (*Engine, error) {
+	for i := range cfg.Policies {
+		if err := cfg.Policies[i].compilePatterns(); err != nil {
+			return nil, fmt.Errorf("policy %d: %w", i, err)
+		}
+	}
+	if err := cfg.DefaultPolicy.compilePatterns(); err != nil {
+		return nil, fmt.Errorf("default policy: %w", err)
+	}
+	return &Engine{cfg: cfg}, nil
 }
 
 // ProcessUsage evaluates usage reports and returns quota assignment actions

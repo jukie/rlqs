@@ -96,6 +96,7 @@ type RLQSServer struct {
 
 // streamState tracks the per-stream lifecycle.
 type streamState struct {
+	mu          sync.Mutex
 	domain      string
 	domainBound bool
 
@@ -172,9 +173,11 @@ func (s *RLQSServer) handleMessage(
 	ctx := stream.Context()
 
 	// Domain binding: the first message sets the domain for the stream.
+	ss.mu.Lock()
 	if !ss.domainBound {
 		domain := req.GetDomain()
 		if domain == "" {
+			ss.mu.Unlock()
 			return status.Error(codes.InvalidArgument, "first message must include a non-empty domain")
 		}
 		ss.domain = domain
@@ -184,10 +187,12 @@ func (s *RLQSServer) handleMessage(
 
 	// Validate domain consistency on subsequent messages.
 	if d := req.GetDomain(); d != "" && d != ss.domain {
+		ss.mu.Unlock()
 		return status.Errorf(codes.InvalidArgument,
 			"domain mismatch: stream bound to %q but received %q (open a new stream to change domain)",
 			ss.domain, d)
 	}
+	ss.mu.Unlock()
 
 	usages := req.GetBucketQuotaUsages()
 	if len(usages) == 0 {
@@ -203,12 +208,19 @@ func (s *RLQSServer) handleMessage(
 		key := storage.BucketKeyFromProto(u.GetBucketId())
 
 		// Track subscription — first report for a bucket is the subscription signal.
-		if _, exists := ss.subscriptions[key]; !exists {
+		ss.mu.Lock()
+		_, exists := ss.subscriptions[key]
+		if !exists {
 			if s.maxBucketsPerStream > 0 && len(ss.subscriptions) >= s.maxBucketsPerStream {
+				ss.mu.Unlock()
 				return status.Errorf(codes.ResourceExhausted,
 					"max buckets per stream exceeded (limit: %d)", s.maxBucketsPerStream)
 			}
 			ss.subscriptions[key] = struct{}{}
+		}
+		ss.mu.Unlock()
+
+		if !exists {
 			metrics.ActiveBuckets.WithLabelValues(ss.domain).Inc()
 			s.logger.Debug("bucket subscribed",
 				zap.String("domain", ss.domain),
@@ -260,7 +272,9 @@ func (s *RLQSServer) handleMessage(
 	for _, a := range actions {
 		if a.GetAbandonAction() != nil {
 			key := storage.BucketKeyFromProto(a.GetBucketId())
+			ss.mu.Lock()
 			delete(ss.subscriptions, key)
+			ss.mu.Unlock()
 			metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
 			s.logger.Debug("bucket abandoned",
 				zap.String("domain", ss.domain),
@@ -310,10 +324,12 @@ func (s *RLQSServer) StreamStats() []admin.StreamInfo {
 	defer s.mu.Unlock()
 	stats := make([]admin.StreamInfo, 0, len(s.streams))
 	for ss := range s.streams {
+		ss.mu.Lock()
 		stats = append(stats, admin.StreamInfo{
 			Domain:            ss.domain,
 			SubscriptionCount: len(ss.subscriptions),
 		})
+		ss.mu.Unlock()
 	}
 	return stats
 }
