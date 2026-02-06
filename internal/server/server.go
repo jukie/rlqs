@@ -82,9 +82,10 @@ func loggingStreamInterceptor(logger *zap.Logger) grpc.StreamServerInterceptor {
 type RLQSServer struct {
 	rlqspb.UnimplementedRateLimitQuotaServiceServer
 
-	logger *zap.Logger
-	store  storage.BucketStore
-	engine atomic.Value // holds quota.Engine
+	logger           *zap.Logger
+	store            storage.BucketStore
+	engine           atomic.Value // holds quota.Engine
+	domainClassifier atomic.Value // holds *metrics.DomainClassifier
 
 	maxBucketsPerStream  int
 	maxReportsPerMessage int
@@ -101,16 +102,23 @@ type RLQSServer struct {
 
 // streamState tracks the per-stream lifecycle.
 type streamState struct {
-	mu          sync.Mutex
-	domain      string
-	domainBound bool
+	mu           sync.Mutex
+	domain       string
+	metricDomain string // bounded label for Prometheus (set once at domain binding)
+	domainBound  bool
 
 	// subscriptions tracks bucket keys the client has reported on this stream.
 	subscriptions map[storage.BucketKey]struct{}
 }
 
 // NewRLQS creates a new RLQSServer with full protocol support.
-func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig) *RLQSServer {
+// The classifier bounds Prometheus domain-label cardinality; if nil a
+// default classifier with no patterns (all domains allowed up to cap) is used.
+func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig, classifier *metrics.DomainClassifier) *RLQSServer {
+	if classifier == nil {
+		// Fallback: allow all domains up to the configured cap.
+		classifier, _ = metrics.NewDomainClassifier(nil, cfg.MaxMetricDomains)
+	}
 	s := &RLQSServer{
 		logger:               logger,
 		store:                store,
@@ -124,6 +132,7 @@ func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine,
 		bucketRefs:           make(map[storage.BucketKey]int),
 	}
 	s.engine.Store(engine)
+	s.domainClassifier.Store(classifier)
 	return s
 }
 
@@ -134,9 +143,21 @@ func (s *RLQSServer) SwapEngine(e quota.Engine) {
 	s.engine.Store(e)
 }
 
+// SwapDomainClassifier atomically replaces the domain classifier used for
+// Prometheus label normalization. Already-bound streams keep their existing
+// metricDomain; new streams use the new classifier.
+func (s *RLQSServer) SwapDomainClassifier(c *metrics.DomainClassifier) {
+	s.domainClassifier.Store(c)
+}
+
+// classifyDomain returns a bounded Prometheus label for the given domain.
+func (s *RLQSServer) classifyDomain(domain string) string {
+	return s.domainClassifier.Load().(*metrics.DomainClassifier).Classify(domain)
+}
+
 // Register adds the RLQS service to the gRPC server using the full protocol implementation.
 func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig) {
-	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine, cfg))
+	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine, cfg, nil))
 }
 
 // StreamRateLimitQuotas implements the bidirectional streaming RPC.
@@ -191,6 +212,7 @@ func (s *RLQSServer) handleMessage(
 			return status.Error(codes.InvalidArgument, "first message must include a non-empty domain")
 		}
 		ss.domain = domain
+		ss.metricDomain = s.classifyDomain(domain)
 		ss.domainBound = true
 		s.logger.Debug("stream bound to domain", zap.String("domain", domain))
 	}
@@ -262,7 +284,7 @@ func (s *RLQSServer) handleMessage(
 			s.mu.Lock()
 			s.bucketRefs[scopedKey]++
 			s.mu.Unlock()
-			metrics.ActiveBuckets.WithLabelValues(ss.domain).Inc()
+			metrics.ActiveBuckets.WithLabelValues(ss.metricDomain).Inc()
 			s.logger.Debug("bucket subscribed",
 				zap.String("domain", ss.domain),
 				zap.String("bucket_key", string(key)))
@@ -286,7 +308,7 @@ func (s *RLQSServer) handleMessage(
 	}
 
 	// Track usage reports processed.
-	metrics.UsageReportsTotal.WithLabelValues(ss.domain).Add(float64(len(reports)))
+	metrics.UsageReportsTotal.WithLabelValues(ss.metricDomain).Add(float64(len(reports)))
 
 	// Consult the quota engine and track duration.
 	engineCtx := ctx
@@ -309,7 +331,7 @@ func (s *RLQSServer) handleMessage(
 	}
 
 	// Track assignments and abandon actions.
-	metrics.AssignmentsTotal.WithLabelValues(ss.domain).Add(float64(len(actions)))
+	metrics.AssignmentsTotal.WithLabelValues(ss.metricDomain).Add(float64(len(actions)))
 	for _, a := range actions {
 		if a.GetAbandonAction() != nil {
 			key := storage.BucketKeyFromProto(a.GetBucketId())
@@ -332,7 +354,7 @@ func (s *RLQSServer) handleMessage(
 				} else {
 					s.mu.Unlock()
 				}
-				metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
+				metrics.ActiveBuckets.WithLabelValues(ss.metricDomain).Dec()
 				s.logger.Debug("bucket abandoned",
 					zap.String("domain", ss.domain),
 					zap.String("bucket_key", string(key)))
@@ -370,7 +392,7 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 		zap.Int("subscriptions", len(ss.subscriptions)))
 
 	for key := range ss.subscriptions {
-		metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
+		metrics.ActiveBuckets.WithLabelValues(ss.metricDomain).Dec()
 		scopedKey := storage.DomainScopedKey(ss.domain, key)
 		s.mu.Lock()
 		s.bucketRefs[scopedKey]--
@@ -442,10 +464,11 @@ type Server struct {
 }
 
 // New creates a Server that uses the full-protocol RLQSServer with health checks.
-func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig, opts ...grpc.ServerOption) *Server {
+// classifier may be nil; see NewRLQS.
+func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig, classifier *metrics.DomainClassifier, opts ...grpc.ServerOption) *Server {
 	grpcSrv := grpc.NewServer(opts...)
 	healthSrv := health.NewServer()
-	rlqsSrv := NewRLQS(logger, store, engine, cfg)
+	rlqsSrv := NewRLQS(logger, store, engine, cfg, classifier)
 
 	rlqspb.RegisterRateLimitQuotaServiceServer(grpcSrv, rlqsSrv)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
@@ -464,6 +487,12 @@ func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg
 // the new engine on their next message.
 func (s *Server) SwapEngine(e quota.Engine) {
 	s.rlqsServer.SwapEngine(e)
+}
+
+// SwapDomainClassifier atomically replaces the domain classifier for
+// Prometheus label normalization.
+func (s *Server) SwapDomainClassifier(c *metrics.DomainClassifier) {
+	s.rlqsServer.SwapDomainClassifier(c)
 }
 
 // StreamStats returns information about all active streams.
