@@ -27,8 +27,10 @@ type StorageConfig struct {
 }
 
 type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	PoolSize int    `yaml:"pool_size"`
+	Addr         string   `yaml:"addr"`
+	PoolSize     int      `yaml:"pool_size"`
+	ReadTimeout  Duration `yaml:"read_timeout"`
+	WriteTimeout Duration `yaml:"write_timeout"`
 }
 
 type ServerConfig struct {

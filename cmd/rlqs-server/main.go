@@ -34,9 +34,11 @@ func buildStore(cfg *config.Config, logger *zap.Logger) storage.BucketStore {
 			zap.Int("pool_size", cfg.Storage.Redis.PoolSize),
 		)
 		return storage.NewRedisStorage(storage.RedisConfig{
-			Addr:     cfg.Storage.Redis.Addr,
-			PoolSize: cfg.Storage.Redis.PoolSize,
-			KeyTTL:   cfg.Engine.ReportingInterval.Duration * 6,
+			Addr:         cfg.Storage.Redis.Addr,
+			PoolSize:     cfg.Storage.Redis.PoolSize,
+			KeyTTL:       cfg.Engine.ReportingInterval.Duration * 6,
+			ReadTimeout:  cfg.Storage.Redis.ReadTimeout.Duration,
+			WriteTimeout: cfg.Storage.Redis.WriteTimeout.Duration,
 		})
 	default:
 		logger.Info("using in-memory storage backend")
@@ -152,6 +154,17 @@ func main() {
 	}
 
 	store := buildStore(cfg, logger)
+
+	// Verify Redis connectivity on startup to catch misconfigurations early.
+	if rs, ok := store.(*storage.RedisStorage); ok {
+		if err := rs.Ping(context.Background()); err != nil {
+			logger.Fatal("redis ping failed on startup — check address and connectivity",
+				zap.String("addr", cfg.Storage.Redis.Addr),
+				zap.Error(err))
+		}
+		logger.Info("redis connectivity verified")
+	}
+
 	eng, err := buildEngine(cfg)
 	if err != nil {
 		logger.Fatal("failed to build quota engine", zap.Error(err))
@@ -239,5 +252,13 @@ func main() {
 	}
 
 	srv.GracefulStop()
+
+	// Close the storage backend (e.g. Redis connections).
+	if closer, ok := store.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			logger.Error("storage close error", zap.Error(err))
+		}
+	}
+
 	logger.Info("server stopped")
 }
