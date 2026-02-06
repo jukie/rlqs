@@ -44,6 +44,8 @@ type Bucket struct {
 }
 
 // Engine manages quota assignments and evaluates rate limit strategies.
+//
+//nolint:revive // QuotaEngine is intentionally named to distinguish from the Engine interface
 type QuotaEngine struct {
 	mu                 sync.Mutex
 	buckets            map[string]*Bucket
