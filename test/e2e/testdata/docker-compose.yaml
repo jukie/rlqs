@@ -3,7 +3,7 @@ services:
     build:
       context: ../../..
       dockerfile: Dockerfile
-    command: ["rlqs-server", "--config", "/etc/rlqs/config.yaml"]
+    command: ["--config", "/etc/rlqs/config.yaml"]
     volumes:
       - ./rlqs-config.yaml:/etc/rlqs/config.yaml:ro
     ports:
