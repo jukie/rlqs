@@ -20,6 +20,49 @@ import (
 
 const serviceName = "envoy.service.rate_limit_quota.v3.RateLimitQuotaService"
 
+// === gRPC Interceptors ===
+
+// recoveryStreamInterceptor converts panics in stream handlers to gRPC errors.
+func recoveryStreamInterceptor(logger *zap.Logger) grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("panic in stream handler",
+					zap.String("method", info.FullMethod),
+					zap.Any("panic", r))
+				err = status.Errorf(codes.Internal, "internal server error: %v", r)
+			}
+		}()
+		return handler(srv, ss)
+	}
+}
+
+// loggingStreamInterceptor logs stream RPC calls.
+func loggingStreamInterceptor(logger *zap.Logger) grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		logger.Debug("stream RPC started", zap.String("method", info.FullMethod))
+		err := handler(srv, ss)
+		if err != nil {
+			logger.Debug("stream RPC completed with error",
+				zap.String("method", info.FullMethod),
+				zap.Error(err))
+		} else {
+			logger.Debug("stream RPC completed", zap.String("method", info.FullMethod))
+		}
+		return err
+	}
+}
+
 // === RLQSServer: full RLQS protocol implementation (rictus) ===
 
 // RLQSServer implements the Rate Limit Quota Service with full protocol support.
@@ -211,6 +254,16 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 	}
 }
 
+// DefaultServerOptions returns the standard set of server options with recovery and logging.
+func DefaultServerOptions(logger *zap.Logger) []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.ChainStreamInterceptor(
+			loggingStreamInterceptor(logger),
+			recoveryStreamInterceptor(logger),
+		),
+	}
+}
+
 // === Server: high-level wrapper with health checks ===
 
 // Server wraps an RLQSServer with health checks and lifecycle management.
@@ -220,8 +273,8 @@ type Server struct {
 }
 
 // New creates a Server that uses the full-protocol RLQSServer with health checks.
-func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine) *Server {
-	grpcSrv := grpc.NewServer()
+func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, opts ...grpc.ServerOption) *Server {
+	grpcSrv := grpc.NewServer(opts...)
 	healthSrv := health.NewServer()
 
 	Register(grpcSrv, logger, store, engine)

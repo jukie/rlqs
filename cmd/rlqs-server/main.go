@@ -48,7 +48,7 @@ func main() {
 		AssignmentTTL: cfg.Engine.ReportingInterval.Duration * 2,
 	})
 
-	srv := server.New(logger, store, eng)
+	srv := server.New(logger, store, eng, server.DefaultServerOptions(logger)...)
 
 	lis, err := net.Listen("tcp", cfg.Server.GRPCAddr)
 	if err != nil {
