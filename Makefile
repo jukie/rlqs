@@ -4,7 +4,7 @@ BUILD_DIR := bin
 GO        := go
 GOFLAGS   :=
 
-.PHONY: all build test lint proto-gen clean fmt vet e2e e2e-up e2e-down
+.PHONY: all build test lint proto-gen clean fmt vet e2e e2e-up e2e-down check install-hooks
 
 all: lint test build
 
@@ -38,3 +38,10 @@ e2e-up:
 
 e2e-down:
 	docker compose -f test/e2e/testdata/docker-compose.yaml down -v
+
+check: lint test
+
+install-hooks:
+	@hooks_dir=$$(git rev-parse --git-common-dir)/hooks && \
+	ln -sf "$(CURDIR)/scripts/pre-commit" "$$hooks_dir/pre-commit" && \
+	echo "Installed pre-commit hook to $$hooks_dir/pre-commit"

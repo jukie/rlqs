@@ -115,6 +115,16 @@ Service names:
 - `""` (empty) - overall server health
 - `envoy.service.rate_limit_quota.v3.RateLimitQuotaService` - RLQS service
 
+## Development
+
+```bash
+# Install the pre-commit hook (runs lint + tests before each commit)
+make install-hooks
+
+# Run lint and tests manually
+make check
+```
+
 ## Build
 
 ```bash

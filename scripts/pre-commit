@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#
+# pre-commit hook: gates commits on lint + tests.
+#
+# Install with: make install-hooks
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo "Running pre-commit checks..."
+
+# --- Lint (changed Go files only for speed) ---
+CHANGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.go' || true)
+
+if [ -n "$CHANGED_GO_FILES" ]; then
+  # Get unique directories of changed files
+  CHANGED_DIRS=$(echo "$CHANGED_GO_FILES" | xargs -n1 dirname | sort -u | sed 's|^|./|' | paste -sd ' ' -)
+
+  echo "Linting changed packages: $CHANGED_DIRS"
+  if ! golangci-lint run $CHANGED_DIRS; then
+    echo -e "${RED}Lint failed. Fix issues before committing.${NC}"
+    exit 1
+  fi
+  echo -e "${GREEN}Lint passed.${NC}"
+else
+  echo "No Go files changed, skipping lint."
+fi
+
+# --- Tests ---
+echo "Running tests..."
+if ! go test ./... -race -count=1; then
+  echo -e "${RED}Tests failed. Fix failures before committing.${NC}"
+  exit 1
+fi
+echo -e "${GREEN}Tests passed.${NC}"
+
+echo -e "${GREEN}All pre-commit checks passed.${NC}"
