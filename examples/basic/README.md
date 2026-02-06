@@ -8,7 +8,7 @@ Single Envoy proxy with the RLQS filter connected to the RLQS server.
 |------|---------|
 | `docker-compose.yaml` | Runs both services |
 | `envoy.yaml` | Annotated Envoy config with `rate_limit_quota` filter |
-| `rlqs-config.yaml` | RLQS server config (100 RPS default) |
+| `rlqs-config.yaml` | RLQS server config (100 tokens per interval default) |
 
 ## Bucket layout
 
@@ -26,7 +26,7 @@ Incoming request
   bucket       bucket
 ```
 
-Both buckets receive 100 RPS quota from the RLQS server. Before the first assignment arrives, both buckets allow all traffic (`ALLOW_ALL`).
+Both buckets receive a 100 tokens/interval quota from the RLQS server. Before the first assignment arrives, both buckets allow all traffic (`ALLOW_ALL`).
 
 ## Run
 
@@ -52,7 +52,7 @@ curl http://localhost:9901/stats | grep rate_limit_quota
 
 ## Customize
 
-**Change the rate limit:** Edit `rlqs-config.yaml` and set `default_rps` to your desired value, then restart:
+**Change the rate limit:** Edit `rlqs-config.yaml` and set `default_tokens_per_fill` to your desired value, then restart:
 
 ```bash
 docker compose restart rlqs-server

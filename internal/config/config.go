@@ -80,7 +80,17 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type EngineConfig struct {
-	DefaultRPS        uint64         `yaml:"default_rps"`
+	// DefaultTokensPerFill is the number of tokens added per reporting interval for the
+	// default token bucket strategy. This maps directly to the TokenBucket.tokens_per_fill
+	// proto field, with FillInterval set to ReportingInterval.
+	// For example, DefaultTokensPerFill=100 with ReportingInterval=10s means 100 tokens
+	// per 10 seconds (10 tokens/second), NOT 100 tokens/second.
+	DefaultTokensPerFill uint64 `yaml:"default_tokens_per_fill"`
+
+	// DefaultRPS is deprecated: use DefaultTokensPerFill instead. The name was misleading
+	// because the value represents tokens per reporting interval, not requests per second.
+	DefaultRPS uint64 `yaml:"default_rps"`
+
 	ReportingInterval Duration       `yaml:"reporting_interval"`
 	Policies          []PolicyConfig `yaml:"policies"`
 }
@@ -109,19 +119,59 @@ type DenyResponseConfig struct {
 
 // PolicyConfig defines a rate limiting policy in YAML.
 type PolicyConfig struct {
-	DomainPattern    string   `yaml:"domain_pattern"`
-	BucketKeyPattern string   `yaml:"bucket_key_pattern"`
-	RPS              uint64   `yaml:"rps"`
-	AssignmentTTL    Duration `yaml:"assignment_ttl"`
+	DomainPattern    string `yaml:"domain_pattern"`
+	BucketKeyPattern string `yaml:"bucket_key_pattern"`
+
+	// TokensPerFill is the number of tokens added per reporting interval for the
+	// token bucket strategy. Maps directly to TokenBucket.tokens_per_fill.
+	TokensPerFill uint64 `yaml:"tokens_per_fill"`
+
+	// RPS is deprecated: use TokensPerFill instead. The name was misleading because
+	// the value represents tokens per reporting interval, not requests per second.
+	RPS uint64 `yaml:"rps"`
+
+	// AssignmentTTL is the TTL sent to clients with each quota assignment.
+	// When omitted (nil), the default TTL (reporting_interval * 2) is used.
+	// When set to "0s", the assignment expires immediately per the RLQS spec.
+	AssignmentTTL *Duration `yaml:"assignment_ttl"`
 
 	// Strategy selects the rate limiting strategy type.
-	// Supported values: "token_bucket" (default), "deny", "allow".
+	// Supported values: "token_bucket" (default), "requests_per_time_unit", "deny", "allow".
 	// When "deny", a BlanketRule DENY_ALL is applied.
 	// When "allow", a BlanketRule ALLOW_ALL is applied.
+	// When "requests_per_time_unit", uses RequestsPerTimeUnit and TimeUnit fields.
 	Strategy string `yaml:"strategy"`
+
+	// RequestsPerTimeUnit is the number of requests allowed per time unit.
+	// Only used when Strategy is "requests_per_time_unit".
+	RequestsPerTimeUnit uint64 `yaml:"requests_per_time_unit"`
+
+	// TimeUnit is the time unit for the requests_per_time_unit strategy.
+	// Accepted values: "second", "minute", "hour", "day", "month", "year".
+	// Only used when Strategy is "requests_per_time_unit".
+	TimeUnit string `yaml:"time_unit"`
 
 	// DenyResponse customizes the response returned to clients when requests are denied.
 	DenyResponse *DenyResponseConfig `yaml:"deny_response" json:"deny_response,omitempty"`
+}
+
+// resolveDeprecated merges deprecated field names into their replacements and
+// applies defaults. Call after YAML unmarshaling and before env var overrides.
+func (e *EngineConfig) resolveDeprecated() {
+	// DefaultRPS → DefaultTokensPerFill (prefer new name if both set)
+	if e.DefaultTokensPerFill == 0 && e.DefaultRPS > 0 {
+		e.DefaultTokensPerFill = e.DefaultRPS
+	}
+	if e.DefaultTokensPerFill == 0 {
+		e.DefaultTokensPerFill = 100 // default
+	}
+
+	// Per-policy: RPS → TokensPerFill
+	for i := range e.Policies {
+		if e.Policies[i].TokensPerFill == 0 && e.Policies[i].RPS > 0 {
+			e.Policies[i].TokensPerFill = e.Policies[i].RPS
+		}
+	}
 }
 
 func Load(path string) (*Config, error) {
@@ -142,7 +192,6 @@ func Load(path string) (*Config, error) {
 			KeepalivePingTimeout:  Duration{20 * time.Second},
 		},
 		Engine: EngineConfig{
-			DefaultRPS:        100,
 			ReportingInterval: Duration{10 * time.Second},
 		},
 	}
@@ -157,15 +206,23 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Resolve deprecated field names: prefer new names, fall back to deprecated.
+	cfg.Engine.resolveDeprecated()
+
 	if v := os.Getenv("RLQS_GRPC_ADDR"); v != "" {
 		cfg.Server.GRPCAddr = v
 	}
 	if v := os.Getenv("RLQS_METRICS_ADDR"); v != "" {
 		cfg.Server.MetricsAddr = v
 	}
-	if v := os.Getenv("RLQS_DEFAULT_RPS"); v != "" {
-		if rps, err := strconv.ParseUint(v, 10, 64); err == nil {
-			cfg.Engine.DefaultRPS = rps
+	if v := os.Getenv("RLQS_DEFAULT_TOKENS_PER_FILL"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			cfg.Engine.DefaultTokensPerFill = n
+		}
+	} else if v := os.Getenv("RLQS_DEFAULT_RPS"); v != "" {
+		// Deprecated env var: use RLQS_DEFAULT_TOKENS_PER_FILL instead.
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			cfg.Engine.DefaultTokensPerFill = n
 		}
 	}
 	if v := os.Getenv("RLQS_REPORTING_INTERVAL"); v != "" {

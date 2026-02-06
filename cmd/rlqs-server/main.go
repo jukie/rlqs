@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,8 +53,8 @@ func buildEngine(cfg *config.Config) (quota.Engine, error) {
 	defaultStrategy := &typev3.RateLimitStrategy{
 		Strategy: &typev3.RateLimitStrategy_TokenBucket{
 			TokenBucket: &typev3.TokenBucket{
-				MaxTokens:     uint32(cfg.Engine.DefaultRPS),
-				TokensPerFill: wrapperspb.UInt32(uint32(cfg.Engine.DefaultRPS)),
+				MaxTokens:     uint32(cfg.Engine.DefaultTokensPerFill),
+				TokensPerFill: wrapperspb.UInt32(uint32(cfg.Engine.DefaultTokensPerFill)),
 				FillInterval:  durationpb.New(cfg.Engine.ReportingInterval.Duration),
 			},
 		},
@@ -64,16 +65,20 @@ func buildEngine(cfg *config.Config) (quota.Engine, error) {
 	if len(cfg.Engine.Policies) == 0 {
 		return quota.NewDefaultEngine(quota.DefaultEngineConfig{
 			DefaultStrategy: defaultStrategy,
-			AssignmentTTL:   defaultTTL,
+			AssignmentTTL:   &defaultTTL,
 		}), nil
 	}
 
 	// Build Engine from config
 	policies := make([]policy.Policy, 0, len(cfg.Engine.Policies))
 	for _, pc := range cfg.Engine.Policies {
-		ttl := pc.AssignmentTTL.Duration
-		if ttl == 0 {
-			ttl = defaultTTL
+		// Resolve TTL: explicit config value wins, otherwise use default.
+		var ttl *time.Duration
+		if pc.AssignmentTTL != nil {
+			d := pc.AssignmentTTL.Duration
+			ttl = &d
+		} else {
+			ttl = &defaultTTL
 		}
 
 		strategy := buildStrategy(pc, cfg.Engine.ReportingInterval.Duration)
@@ -91,13 +96,14 @@ func buildEngine(cfg *config.Config) (quota.Engine, error) {
 		Policies: policies,
 		DefaultPolicy: policy.Policy{
 			Strategy:      defaultStrategy,
-			AssignmentTTL: defaultTTL,
+			AssignmentTTL: &defaultTTL,
 		},
 	})
 }
 
 // buildStrategy creates a RateLimitStrategy from a PolicyConfig.
-// Supports "deny" (DENY_ALL), "allow" (ALLOW_ALL), and "token_bucket" (default).
+// Supports "deny" (DENY_ALL), "allow" (ALLOW_ALL), "requests_per_time_unit",
+// and "token_bucket" (default).
 func buildStrategy(pc config.PolicyConfig, reportingInterval time.Duration) *typev3.RateLimitStrategy {
 	switch pc.Strategy {
 	case "deny":
@@ -112,16 +118,45 @@ func buildStrategy(pc config.PolicyConfig, reportingInterval time.Duration) *typ
 				BlanketRule: typev3.RateLimitStrategy_ALLOW_ALL,
 			},
 		}
+	case "requests_per_time_unit":
+		return &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_RequestsPerTimeUnit_{
+				RequestsPerTimeUnit: &typev3.RateLimitStrategy_RequestsPerTimeUnit{
+					RequestsPerTimeUnit: pc.RequestsPerTimeUnit,
+					TimeUnit:            parseTimeUnit(pc.TimeUnit),
+				},
+			},
+		}
 	default: // "token_bucket" or empty
 		return &typev3.RateLimitStrategy{
 			Strategy: &typev3.RateLimitStrategy_TokenBucket{
 				TokenBucket: &typev3.TokenBucket{
-					MaxTokens:     uint32(pc.RPS),
-					TokensPerFill: wrapperspb.UInt32(uint32(pc.RPS)),
+					MaxTokens:     uint32(pc.TokensPerFill),
+					TokensPerFill: wrapperspb.UInt32(uint32(pc.TokensPerFill)),
 					FillInterval:  durationpb.New(reportingInterval),
 				},
 			},
 		}
+	}
+}
+
+// parseTimeUnit converts a YAML time unit string to the proto enum value.
+func parseTimeUnit(s string) typev3.RateLimitUnit {
+	switch strings.ToUpper(s) {
+	case "SECOND":
+		return typev3.RateLimitUnit_SECOND
+	case "MINUTE":
+		return typev3.RateLimitUnit_MINUTE
+	case "HOUR":
+		return typev3.RateLimitUnit_HOUR
+	case "DAY":
+		return typev3.RateLimitUnit_DAY
+	case "MONTH":
+		return typev3.RateLimitUnit_MONTH
+	case "YEAR":
+		return typev3.RateLimitUnit_YEAR
+	default:
+		return typev3.RateLimitUnit_SECOND
 	}
 }
 

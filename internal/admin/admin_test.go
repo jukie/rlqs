@@ -15,7 +15,7 @@ import (
 func newTestHandler(streams []StreamInfo, store storage.BucketStore) *Handler {
 	return New(func() []StreamInfo { return streams }, store, &config.Config{
 		Server: config.ServerConfig{GRPCAddr: ":18081", MetricsAddr: ":9090"},
-		Engine: config.EngineConfig{DefaultRPS: 100},
+		Engine: config.EngineConfig{DefaultTokensPerFill: 100},
 	})
 }
 

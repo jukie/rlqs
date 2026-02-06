@@ -79,7 +79,9 @@ server:
   grpc_addr: ":18081"      # gRPC listen address
 
 engine:
-  default_rps: 100          # Requests per second assigned to each bucket
+  # Tokens added per reporting interval for the default token bucket strategy.
+  # With reporting_interval=10s, 100 tokens = 10 tokens/second.
+  default_tokens_per_fill: 100
   reporting_interval: "10s"  # Expected reporting interval from Envoy
 ```
 
@@ -96,7 +98,7 @@ Environment variables override config file values:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RLQS_GRPC_ADDR` | `:18081` | gRPC listen address |
-| `RLQS_DEFAULT_RPS` | `100` | Default requests-per-second quota |
+| `RLQS_DEFAULT_TOKENS_PER_FILL` | `100` | Tokens per reporting interval for default token bucket |
 | `RLQS_REPORTING_INTERVAL` | `10s` | Reporting interval (Go duration string) |
 
 **Precedence:** defaults < config file < environment variables.
@@ -130,14 +132,14 @@ docker build -t rlqs-server .
 ## Run
 
 ```bash
-# With defaults (listen on :18081, 100 RPS)
+# With defaults (listen on :18081, 100 tokens per interval)
 ./bin/rlqs-server
 
 # With config file
 ./bin/rlqs-server -config config.yaml
 
 # With environment overrides
-RLQS_DEFAULT_RPS=50 RLQS_GRPC_ADDR=":9090" ./bin/rlqs-server
+RLQS_DEFAULT_TOKENS_PER_FILL=50 RLQS_GRPC_ADDR=":9090" ./bin/rlqs-server
 ```
 
 ## Examples

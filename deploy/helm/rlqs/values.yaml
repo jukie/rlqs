@@ -19,7 +19,7 @@ config:
     grpc_addr: ":18081"
     metrics_addr: ":9090"
   engine:
-    default_rps: 100
+    default_tokens_per_fill: 100
     reporting_interval: "10s"
 
 podDisruptionBudget:

@@ -34,7 +34,10 @@ type Policy struct {
 	Strategy *typev3.RateLimitStrategy
 
 	// AssignmentTTL is the TTL sent to clients with each quota assignment.
-	AssignmentTTL time.Duration
+	// When nil, no TTL is sent (Envoy treats as no expiration).
+	// When non-nil (including zero), the value is sent to the client.
+	// A zero duration means the assignment expires immediately per the RLQS spec.
+	AssignmentTTL *time.Duration
 
 	// DenyResponse holds optional deny response customization for this policy.
 	DenyResponse *config.DenyResponseConfig
@@ -144,8 +147,8 @@ func (e *Engine) ProcessUsage(_ context.Context, domain string, reports []storag
 
 		// Build assignment action
 		assignment := &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{}
-		if matchedPolicy.AssignmentTTL > 0 {
-			assignment.AssignmentTimeToLive = durationpb.New(matchedPolicy.AssignmentTTL)
+		if matchedPolicy.AssignmentTTL != nil {
+			assignment.AssignmentTimeToLive = durationpb.New(*matchedPolicy.AssignmentTTL)
 		}
 		if matchedPolicy.Strategy != nil {
 			assignment.RateLimitStrategy = matchedPolicy.Strategy
