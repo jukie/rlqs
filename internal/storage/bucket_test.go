@@ -76,7 +76,7 @@ func TestCanonicalize_NoAmbiguity(t *testing.T) {
 // --- BucketStore basic CRUD ---
 
 func TestStore_GetOrCreate_New(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id := bucketId("svc", "web")
 	b, created := s.GetOrCreate(id)
 	if !created {
@@ -94,7 +94,7 @@ func TestStore_GetOrCreate_New(t *testing.T) {
 }
 
 func TestStore_GetOrCreate_Existing(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id := bucketId("svc", "web")
 	b1, _ := s.GetOrCreate(id)
 	b2, created := s.GetOrCreate(id)
@@ -107,7 +107,7 @@ func TestStore_GetOrCreate_Existing(t *testing.T) {
 }
 
 func TestStore_GetOrCreate_OrderIndependent(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id1 := bucketId("a", "1", "b", "2")
 	id2 := bucketId("b", "2", "a", "1")
 	b1, _ := s.GetOrCreate(id1)
@@ -124,14 +124,14 @@ func TestStore_GetOrCreate_OrderIndependent(t *testing.T) {
 }
 
 func TestStore_Get_Missing(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	if got := s.Get(bucketId("x", "y")); got != nil {
 		t.Fatal("expected nil for missing bucket")
 	}
 }
 
 func TestStore_Get_Present(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id := bucketId("x", "y")
 	want, _ := s.GetOrCreate(id)
 	got := s.Get(id)
@@ -141,7 +141,7 @@ func TestStore_Get_Present(t *testing.T) {
 }
 
 func TestStore_GetByKey(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id := bucketId("a", "b")
 	want, _ := s.GetOrCreate(id)
 	key := CanonicalizeBucketId(id)
@@ -152,7 +152,7 @@ func TestStore_GetByKey(t *testing.T) {
 }
 
 func TestStore_Delete(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id := bucketId("x", "y")
 	s.GetOrCreate(id)
 	if !s.Delete(id) {
@@ -167,7 +167,7 @@ func TestStore_Delete(t *testing.T) {
 }
 
 func TestStore_Len(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	if s.Len() != 0 {
 		t.Fatal("new store should be empty")
 	}
@@ -181,7 +181,7 @@ func TestStore_Len(t *testing.T) {
 // --- ForEach ---
 
 func TestStore_ForEach(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	s.GetOrCreate(bucketId("a", "1"))
 	s.GetOrCreate(bucketId("b", "2"))
 	s.GetOrCreate(bucketId("c", "3"))
@@ -198,7 +198,7 @@ func TestStore_ForEach(t *testing.T) {
 // --- SnapshotAndReset ---
 
 func TestStore_SnapshotAndReset(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	b, _ := s.GetOrCreate(bucketId("svc", "web"))
 	b.NumRequestsAllowed = 100
 	b.NumRequestsDenied = 5
@@ -225,7 +225,7 @@ func TestStore_SnapshotAndReset(t *testing.T) {
 }
 
 func TestStore_SnapshotAndReset_Empty(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	snaps := s.SnapshotAndReset()
 	if len(snaps) != 0 {
 		t.Fatal("snapshot of empty store should be empty")
@@ -233,7 +233,7 @@ func TestStore_SnapshotAndReset_Empty(t *testing.T) {
 }
 
 func TestStore_SnapshotAndReset_MultipleBuckets(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	b1, _ := s.GetOrCreate(bucketId("a", "1"))
 	b1.NumRequestsAllowed = 10
 	b2, _ := s.GetOrCreate(bucketId("b", "2"))
@@ -255,7 +255,7 @@ func TestStore_SnapshotAndReset_MultipleBuckets(t *testing.T) {
 // --- Concurrency ---
 
 func TestStore_ConcurrentGetOrCreate(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	id := bucketId("svc", "web")
 	const goroutines = 100
 
@@ -283,7 +283,7 @@ func TestStore_ConcurrentGetOrCreate(t *testing.T) {
 }
 
 func TestStore_ConcurrentReadWrite(t *testing.T) {
-	s := NewBucketStore()
+	s := NewMemoryBucketStore()
 	const n = 50
 
 	var wg sync.WaitGroup

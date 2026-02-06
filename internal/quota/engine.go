@@ -44,7 +44,7 @@ type Bucket struct {
 }
 
 // Engine manages quota assignments and evaluates rate limit strategies.
-type Engine struct {
+type QuotaEngine struct {
 	mu                 sync.Mutex
 	buckets            map[string]*Bucket
 	abandonmentTimeout time.Duration
@@ -53,8 +53,8 @@ type Engine struct {
 }
 
 // New creates a new Engine with the given configuration.
-func New(cfg Config) *Engine {
-	return &Engine{
+func New(cfg Config) *QuotaEngine {
+	return &QuotaEngine{
 		buckets:            make(map[string]*Bucket),
 		abandonmentTimeout: cfg.AbandonmentTimeout,
 		assignmentTTL:      cfg.AssignmentTTL,
@@ -63,14 +63,14 @@ func New(cfg Config) *Engine {
 }
 
 // NewWithClock creates an Engine with an injected clock for testing.
-func NewWithClock(cfg Config, clock Clock) *Engine {
+func NewWithClock(cfg Config, clock Clock) *QuotaEngine {
 	e := New(cfg)
 	e.clock = clock
 	return e
 }
 
 // Assign sets or replaces the quota strategy for a bucket.
-func (e *Engine) Assign(bucketID string, strategy *typev3.RateLimitStrategy) *Bucket {
+func (e *QuotaEngine) Assign(bucketID string, strategy *typev3.RateLimitStrategy) *Bucket {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -93,7 +93,7 @@ func (e *Engine) Assign(bucketID string, strategy *typev3.RateLimitStrategy) *Bu
 
 // Get returns the bucket if it exists and is still valid.
 // Returns nil if the bucket is not found, expired, or abandoned.
-func (e *Engine) Get(bucketID string) *Bucket {
+func (e *QuotaEngine) Get(bucketID string) *Bucket {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -112,7 +112,7 @@ func (e *Engine) Get(bucketID string) *Bucket {
 }
 
 // Touch updates the last activity time for a bucket.
-func (e *Engine) Touch(bucketID string) bool {
+func (e *QuotaEngine) Touch(bucketID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -126,7 +126,7 @@ func (e *Engine) Touch(bucketID string) bool {
 
 // Allow evaluates the assigned strategy for a bucket and returns whether
 // the request should be allowed.
-func (e *Engine) Allow(bucketID string) (bool, error) {
+func (e *QuotaEngine) Allow(bucketID string) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -150,7 +150,7 @@ func (e *Engine) Allow(bucketID string) (bool, error) {
 }
 
 // Cleanup removes expired and abandoned buckets. Returns the number removed.
-func (e *Engine) Cleanup() int {
+func (e *QuotaEngine) Cleanup() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -168,21 +168,21 @@ func (e *Engine) Cleanup() int {
 }
 
 // Len returns the number of active buckets.
-func (e *Engine) Len() int {
+func (e *QuotaEngine) Len() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return len(e.buckets)
 }
 
-func (e *Engine) isExpired(b *Bucket, now time.Time) bool {
+func (e *QuotaEngine) isExpired(b *Bucket, now time.Time) bool {
 	return e.assignmentTTL > 0 && now.Sub(b.AssignedAt) > e.assignmentTTL
 }
 
-func (e *Engine) isAbandoned(b *Bucket, now time.Time) bool {
+func (e *QuotaEngine) isAbandoned(b *Bucket, now time.Time) bool {
 	return e.abandonmentTimeout > 0 && now.Sub(b.LastActivity) > e.abandonmentTimeout
 }
 
-func (e *Engine) evaluate(b *Bucket, now time.Time) (bool, error) {
+func (e *QuotaEngine) evaluate(b *Bucket, now time.Time) (bool, error) {
 	if b.Strategy == nil || b.Strategy.Strategy == nil {
 		return true, nil
 	}
@@ -202,7 +202,7 @@ func (e *Engine) evaluate(b *Bucket, now time.Time) (bool, error) {
 	}
 }
 
-func (e *Engine) evaluateRequestsPerTimeUnit(
+func (e *QuotaEngine) evaluateRequestsPerTimeUnit(
 	b *Bucket,
 	rptu *typev3.RateLimitStrategy_RequestsPerTimeUnit,
 	now time.Time,
@@ -229,7 +229,7 @@ func (e *Engine) evaluateRequestsPerTimeUnit(
 	return true, nil
 }
 
-func (e *Engine) evaluateTokenBucket(b *Bucket, tb *typev3.TokenBucket, now time.Time) (bool, error) {
+func (e *QuotaEngine) evaluateTokenBucket(b *Bucket, tb *typev3.TokenBucket, now time.Time) (bool, error) {
 	fillInterval := tb.GetFillInterval().AsDuration()
 	if fillInterval > 0 {
 		elapsed := now.Sub(b.lastRefill)

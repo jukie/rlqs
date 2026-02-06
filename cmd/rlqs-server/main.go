@@ -11,7 +11,9 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/server"
+	"github.com/jukie/rlqs/internal/storage"
 )
 
 func main() {
@@ -31,8 +33,12 @@ func main() {
 		logger.Fatal("failed to listen", zap.Error(err))
 	}
 
+	// TODO: replace with real implementations.
+	var store storage.BucketStore
+	var engine quota.Engine
+
 	grpcServer := grpc.NewServer()
-	server.Register(grpcServer, logger)
+	server.Register(grpcServer, logger, store, engine)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

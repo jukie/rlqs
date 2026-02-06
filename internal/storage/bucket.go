@@ -52,22 +52,22 @@ type BucketState struct {
 	CreatedAt time.Time
 }
 
-// BucketStore is a thread-safe in-memory store for rate-limit bucket states,
+// MemoryBucketStore is a thread-safe in-memory store for rate-limit bucket states,
 // keyed by canonicalized BucketId.
-type BucketStore struct {
+type MemoryBucketStore struct {
 	mu      sync.RWMutex
 	buckets map[CanonicalBucketKey]*BucketState
 }
 
-// NewBucketStore returns an initialized BucketStore.
-func NewBucketStore() *BucketStore {
-	return &BucketStore{
+// NewMemoryBucketStore returns an initialized MemoryBucketStore.
+func NewMemoryBucketStore() *MemoryBucketStore {
+	return &MemoryBucketStore{
 		buckets: make(map[CanonicalBucketKey]*BucketState),
 	}
 }
 
 // Get returns the BucketState for the given BucketId, or nil if not present.
-func (s *BucketStore) Get(id *rlqspb.BucketId) *BucketState {
+func (s *MemoryBucketStore) Get(id *rlqspb.BucketId) *BucketState {
 	key := CanonicalizeBucketId(id)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -75,7 +75,7 @@ func (s *BucketStore) Get(id *rlqspb.BucketId) *BucketState {
 }
 
 // GetByKey returns the BucketState for the given canonical key.
-func (s *BucketStore) GetByKey(key CanonicalBucketKey) *BucketState {
+func (s *MemoryBucketStore) GetByKey(key CanonicalBucketKey) *BucketState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.buckets[key]
@@ -83,7 +83,7 @@ func (s *BucketStore) GetByKey(key CanonicalBucketKey) *BucketState {
 
 // GetOrCreate atomically returns an existing bucket or creates a new one.
 // The created return value indicates whether a new bucket was inserted.
-func (s *BucketStore) GetOrCreate(id *rlqspb.BucketId) (bucket *BucketState, created bool) {
+func (s *MemoryBucketStore) GetOrCreate(id *rlqspb.BucketId) (bucket *BucketState, created bool) {
 	key := CanonicalizeBucketId(id)
 
 	// Fast path: read lock.
@@ -110,7 +110,7 @@ func (s *BucketStore) GetOrCreate(id *rlqspb.BucketId) (bucket *BucketState, cre
 }
 
 // Delete removes a bucket by BucketId. Returns true if it existed.
-func (s *BucketStore) Delete(id *rlqspb.BucketId) bool {
+func (s *MemoryBucketStore) Delete(id *rlqspb.BucketId) bool {
 	key := CanonicalizeBucketId(id)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,7 +120,7 @@ func (s *BucketStore) Delete(id *rlqspb.BucketId) bool {
 }
 
 // Len returns the number of buckets in the store.
-func (s *BucketStore) Len() int {
+func (s *MemoryBucketStore) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.buckets)
@@ -128,7 +128,7 @@ func (s *BucketStore) Len() int {
 
 // ForEach calls fn for every bucket while holding a read lock.
 // The callback must not modify the store.
-func (s *BucketStore) ForEach(fn func(key CanonicalBucketKey, state *BucketState)) {
+func (s *MemoryBucketStore) ForEach(fn func(key CanonicalBucketKey, state *BucketState)) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for k, v := range s.buckets {
@@ -138,7 +138,7 @@ func (s *BucketStore) ForEach(fn func(key CanonicalBucketKey, state *BucketState
 
 // SnapshotAndReset atomically snapshots all buckets and resets their counters,
 // returning a slice of copies suitable for building a usage report.
-func (s *BucketStore) SnapshotAndReset() []BucketState {
+func (s *MemoryBucketStore) SnapshotAndReset() []BucketState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
