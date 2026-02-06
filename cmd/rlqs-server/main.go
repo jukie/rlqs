@@ -11,6 +11,7 @@ import (
 
 	"github.com/jukie/rlqs/internal/admin"
 	"github.com/jukie/rlqs/internal/config"
+	"github.com/jukie/rlqs/internal/metrics"
 	"github.com/jukie/rlqs/internal/policy"
 	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/server"
@@ -123,6 +124,18 @@ func buildStrategy(pc config.PolicyConfig, reportingInterval time.Duration) *typ
 	}
 }
 
+// buildDomainClassifier extracts domain patterns from policies and creates a
+// DomainClassifier that bounds Prometheus label cardinality.
+func buildDomainClassifier(cfg *config.Config) (*metrics.DomainClassifier, error) {
+	patterns := make([]string, 0, len(cfg.Engine.Policies))
+	for _, pc := range cfg.Engine.Policies {
+		if pc.DomainPattern != "" {
+			patterns = append(patterns, pc.DomainPattern)
+		}
+	}
+	return metrics.NewDomainClassifier(patterns, cfg.Server.MaxMetricDomains)
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to config file")
 	flag.Parse()
@@ -157,6 +170,11 @@ func main() {
 		logger.Fatal("failed to build quota engine", zap.Error(err))
 	}
 
+	classifier, err := buildDomainClassifier(cfg)
+	if err != nil {
+		logger.Fatal("failed to build domain classifier", zap.Error(err))
+	}
+
 	opts := server.DefaultServerOptions(logger, cfg.Server)
 	if cfg.Server.TLS.CertFile != "" {
 		tlsOpt, err := server.TLSOption(cfg.Server.TLS)
@@ -169,7 +187,7 @@ func main() {
 			zap.Bool("mtls", cfg.Server.TLS.CAFile != ""))
 	}
 
-	srv := server.New(logger, store, eng, cfg.Server, opts...)
+	srv := server.New(logger, store, eng, cfg.Server, classifier, opts...)
 
 	lis, err := net.Listen("tcp", cfg.Server.GRPCAddr)
 	if err != nil {
@@ -245,7 +263,13 @@ func main() {
 						logger.Error("hot-reload: invalid policy config, keeping current engine", zap.Error(err))
 						continue
 					}
+					newClassifier, err := buildDomainClassifier(newCfg)
+					if err != nil {
+						logger.Error("hot-reload: invalid domain classifier config, keeping current", zap.Error(err))
+						continue
+					}
 					srv.SwapEngine(newEngine)
+					srv.SwapDomainClassifier(newClassifier)
 					currentCfg = newCfg
 					logger.Info("engine hot-reloaded with new config")
 				}

@@ -47,6 +47,9 @@ type ServerConfig struct {
 	MaxBucketKeyLen   int `yaml:"max_bucket_key_len"`
 	MaxBucketValueLen int `yaml:"max_bucket_value_len"`
 
+	// Prometheus cardinality protection
+	MaxMetricDomains int `yaml:"max_metric_domains"`
+
 	// Keepalive
 	KeepaliveMaxIdleTime  Duration `yaml:"keepalive_max_idle_time"`
 	KeepalivePingInterval Duration `yaml:"keepalive_ping_interval"`
@@ -133,6 +136,7 @@ func Load(path string) (*Config, error) {
 			MaxBucketEntries:      100,
 			MaxBucketKeyLen:       256,
 			MaxBucketValueLen:     1024,
+			MaxMetricDomains:      100,
 			KeepaliveMaxIdleTime:  Duration{5 * time.Minute},
 			KeepalivePingInterval: Duration{1 * time.Minute},
 			KeepalivePingTimeout:  Duration{20 * time.Second},

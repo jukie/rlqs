@@ -37,7 +37,7 @@ func setupServer(t *testing.T, rps uint64) (*server.Server, *storage.MemoryStora
 		AssignmentTTL: 10 * time.Second,
 	})
 
-	srv := server.New(logger, store, eng, config.ServerConfig{})
+	srv := server.New(logger, store, eng, config.ServerConfig{}, nil)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -275,7 +275,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 		AssignmentTTL: 20 * time.Second,
 	})
 
-	srv := server.New(logger, store, eng, config.ServerConfig{})
+	srv := server.New(logger, store, eng, config.ServerConfig{}, nil)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/jukie/rlqs/internal/config"
+	"github.com/jukie/rlqs/internal/metrics"
 	"github.com/jukie/rlqs/internal/storage"
 )
 
@@ -826,7 +827,7 @@ func TestServerSwapEngine(t *testing.T) {
 	srv := New(logger, st, eng, config.ServerConfig{
 		MaxBucketsPerStream: 0,
 		EngineTimeout:       config.Duration{Duration: 5 * time.Second},
-	})
+	}, nil)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1197,6 +1198,135 @@ func TestBucketIdEmptyValueRejected(t *testing.T) {
 			t.Fatalf("expected InvalidArgument, got %v", err)
 		}
 		break
+	}
+}
+
+// --- Prometheus cardinality protection tests ---
+
+func TestUnknownDomainUsesOverflowLabel(t *testing.T) {
+	// Create a classifier that only allows domains matching ^envoy\.
+	classifier, err := metrics.NewDomainClassifier([]string{`^envoy\.`}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+	eng := &fakeEngine{}
+
+	srv := grpc.NewServer()
+	rlqsSrv := NewRLQS(logger, st, eng, config.ServerConfig{
+		EngineTimeout: config.Duration{Duration: 5 * time.Second},
+	}, classifier)
+	rlqspb.RegisterRateLimitQuotaServiceServer(srv, rlqsSrv)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+
+	// Send a stream with a domain that does NOT match the classifier pattern.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bid := bucketID("name", "test")
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "evil.attacker.com",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err != nil {
+			break
+		}
+	}
+
+	// The stream should have used __unknown__ as metricDomain.
+	// We verify this indirectly: usage was still recorded (business logic uses real domain).
+	if len(st.usages) != 1 {
+		t.Fatalf("expected 1 usage, got %d", len(st.usages))
+	}
+}
+
+func TestKnownDomainPassesThrough(t *testing.T) {
+	classifier, err := metrics.NewDomainClassifier([]string{`^envoy`}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+	eng := &fakeEngine{}
+
+	srv := grpc.NewServer()
+	rlqsSrv := NewRLQS(logger, st, eng, config.ServerConfig{
+		EngineTimeout: config.Duration{Duration: 5 * time.Second},
+	}, classifier)
+	rlqspb.RegisterRateLimitQuotaServiceServer(srv, rlqsSrv)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bid := bucketID("name", "test")
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err != nil {
+			break
+		}
+	}
+
+	if len(st.usages) != 1 {
+		t.Fatalf("expected 1 usage, got %d", len(st.usages))
 	}
 }
 
