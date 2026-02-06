@@ -226,13 +226,40 @@ func main() {
 			logger.Error("failed to start config watcher, hot-reload disabled", zap.Error(err))
 		} else {
 			go func() {
+				currentCfg := cfg
 				for newCfg := range cfgCh {
+					changes := config.Diff(currentCfg, newCfg)
+					if len(changes) == 0 {
+						logger.Info("hot-reload: config file changed but no effective differences detected")
+						continue
+					}
+
+					for _, c := range changes {
+						if c.Scope == config.ScopeRequiresRestart {
+							logger.Warn("hot-reload: config section changed but requires server restart to take effect",
+								zap.String("section", c.Section))
+						} else {
+							logger.Info("hot-reload: applying config change",
+								zap.String("section", c.Section))
+						}
+					}
+
+					// Collect restart-required changes for the admin endpoint.
+					var restartChanges []config.ConfigChange
+					for _, c := range changes {
+						if c.Scope == config.ScopeRequiresRestart {
+							restartChanges = append(restartChanges, c)
+						}
+					}
+					adminHandler.SetPendingRestartChanges(restartChanges)
+
 					newEngine, err := buildEngine(newCfg)
 					if err != nil {
 						logger.Error("hot-reload: invalid policy config, keeping current engine", zap.Error(err))
 						continue
 					}
 					srv.SwapEngine(newEngine)
+					currentCfg = newCfg
 					logger.Info("engine hot-reloaded with new config")
 				}
 			}()

@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/storage"
@@ -24,6 +25,9 @@ type Handler struct {
 	streamStats func() []StreamInfo
 	store       storage.BucketStore
 	cfg         *config.Config
+
+	mu                    sync.RWMutex
+	pendingRestartChanges []config.ConfigChange
 }
 
 // New creates an admin handler.
@@ -101,7 +105,26 @@ func (h *Handler) handleDebugBuckets(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
+// SetPendingRestartChanges records config sections that changed on reload
+// but require a restart to take effect.
+func (h *Handler) SetPendingRestartChanges(changes []config.ConfigChange) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pendingRestartChanges = changes
+}
+
 func (h *Handler) handleDebugConfig(w http.ResponseWriter, _ *http.Request) {
+	h.mu.RLock()
+	pending := h.pendingRestartChanges
+	h.mu.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h.cfg)
+	resp := struct {
+		Config                *config.Config        `json:"config"`
+		PendingRestartChanges []config.ConfigChange `json:"pending_restart_changes,omitempty"`
+	}{
+		Config:                h.cfg,
+		PendingRestartChanges: pending,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
