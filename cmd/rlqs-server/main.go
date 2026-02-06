@@ -178,6 +178,23 @@ func main() {
 		}
 	}()
 
+	// Start config hot-reload watcher if a config file was specified.
+	if *configPath != "" {
+		watcher := config.NewWatcher(*configPath, logger)
+		cfgCh, err := watcher.Watch(ctx)
+		if err != nil {
+			logger.Error("failed to start config watcher, hot-reload disabled", zap.Error(err))
+		} else {
+			go func() {
+				for newCfg := range cfgCh {
+					newEngine := buildEngine(newCfg)
+					srv.SwapEngine(newEngine)
+					logger.Info("engine hot-reloaded with new config")
+				}
+			}()
+		}
+	}
+
 	<-ctx.Done()
 	logger.Info("shutting down")
 

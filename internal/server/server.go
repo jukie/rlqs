@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jukie/rlqs/internal/admin"
@@ -83,7 +84,7 @@ type RLQSServer struct {
 
 	logger *zap.Logger
 	store  storage.BucketStore
-	engine quota.Engine
+	engine atomic.Value // holds quota.Engine
 
 	maxBucketsPerStream int
 	engineTimeout       time.Duration
@@ -104,14 +105,22 @@ type streamState struct {
 
 // NewRLQS creates a new RLQSServer with full protocol support.
 func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, maxBuckets int, engineTimeout time.Duration) *RLQSServer {
-	return &RLQSServer{
+	s := &RLQSServer{
 		logger:              logger,
 		store:               store,
-		engine:              engine,
 		maxBucketsPerStream: maxBuckets,
 		engineTimeout:       engineTimeout,
 		streams:             make(map[*streamState]struct{}),
 	}
+	s.engine.Store(engine)
+	return s
+}
+
+// SwapEngine atomically replaces the quota engine used for all subsequent
+// ProcessUsage calls. Active streams pick up the new engine on their next
+// message without interruption.
+func (s *RLQSServer) SwapEngine(e quota.Engine) {
+	s.engine.Store(e)
 }
 
 // Register adds the RLQS service to the gRPC server using the full protocol implementation.
@@ -234,7 +243,8 @@ func (s *RLQSServer) handleMessage(
 		defer cancel()
 	}
 	start := time.Now()
-	actions, err := s.engine.ProcessUsage(engineCtx, ss.domain, reports)
+	eng := s.engine.Load().(quota.Engine)
+	actions, err := eng.ProcessUsage(engineCtx, ss.domain, reports)
 	metrics.EngineDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		s.logger.Error("engine error", zap.String("domain", ss.domain), zap.Error(err))
@@ -360,6 +370,12 @@ func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg
 		healthServer: healthSrv,
 		rlqsServer:   rlqsSrv,
 	}
+}
+
+// SwapEngine atomically replaces the quota engine. Active streams pick up
+// the new engine on their next message.
+func (s *Server) SwapEngine(e quota.Engine) {
+	s.rlqsServer.SwapEngine(e)
 }
 
 // StreamStats returns information about all active streams.

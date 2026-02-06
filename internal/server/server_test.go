@@ -746,6 +746,110 @@ func TestTLSOptionInvalidCertFile(t *testing.T) {
 	}
 }
 
+func TestServerSwapEngine(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+	eng := &fakeEngine{}
+
+	srv := New(logger, st, eng, config.ServerConfig{
+		MaxBucketsPerStream: 0,
+		EngineTimeout:       config.Duration{Duration: 5 * time.Second},
+	})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+
+	bid := bucketID("name", "swap-test")
+
+	// First: engine returns no actions.
+	eng.actions = nil
+
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	stream1, err := client.StreamRateLimitQuotas(ctx1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = stream1.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream1.CloseSend()
+	for {
+		_, err := stream1.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("expected no response from initial engine")
+	}
+
+	// Swap engine to one that returns actions.
+	newEngine := &fakeEngine{
+		actions: []*rlqspb.RateLimitQuotaResponse_BucketAction{
+			{
+				BucketId: bid,
+				BucketAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction_{
+					QuotaAssignmentAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{
+						AssignmentTimeToLive: durationpb.New(30 * time.Second),
+					},
+				},
+			},
+		},
+	}
+	srv.SwapEngine(newEngine)
+
+	// Second stream after swap — should see actions from new engine.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+
+	stream2, err := client.StreamRateLimitQuotas(ctx2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = stream2.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := stream2.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.GetBucketAction()) != 1 {
+		t.Fatalf("expected 1 action after swap, got %d", len(resp.GetBucketAction()))
+	}
+	if resp.GetBucketAction()[0].GetQuotaAssignmentAction() == nil {
+		t.Fatal("expected assignment action after engine swap")
+	}
+}
+
 func TestTLSOptionInvalidCAFile(t *testing.T) {
 	caCertPEM, caKeyPEM := generateTestCA(t)
 	serverCertPEM, serverKeyPEM := generateTestCert(t, caCertPEM, caKeyPEM)
