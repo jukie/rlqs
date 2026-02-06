@@ -134,19 +134,44 @@ func TestE2E_BasicRateLimiting(t *testing.T) {
 	}
 
 	// Wait for Envoy to send a usage report and receive the assignment back.
-	// Reporting interval is 2s, plus some propagation time.
+	// Reporting interval is 2s, plus propagation time.
 	t.Log("waiting for RLQS assignment to propagate...")
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
+
+	// Send a few more requests to ensure assignment is active and being enforced.
+	for i := 0; i < 3; i++ {
+		sendRequest("/warmup2")
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Wait a bit more for the rate limit to be enforced.
+	time.Sleep(2 * time.Second)
 
 	// Phase 2: Send a burst of requests — RLQS configured with 5 RPS.
-	// We send 30 requests concurrently; at 5 RPS, most should be rate-limited.
-	counts := sendBurst(30, "/test")
+	// We send 30 requests as fast as possible; at 5 RPS, most should be rate-limited.
+	var ok, limited int
+	start := time.Now()
+	for i := 0; i < 30; i++ {
+		code, err := sendRequest("/test")
+		require.NoError(t, err)
+		switch code {
+		case http.StatusOK:
+			ok++
+		case http.StatusTooManyRequests:
+			limited++
+		default:
+			t.Errorf("unexpected status code: %d", code)
+		}
+		// Tiny delay to avoid perfect simultaneity but still create a burst
+		if i < 29 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	elapsed := time.Since(start)
 
-	ok := counts[http.StatusOK]
-	limited := counts[http.StatusTooManyRequests]
-	t.Logf("results: %d OK, %d rate-limited (429)", ok, limited)
+	t.Logf("results: %d OK, %d rate-limited (429) in %v", ok, limited, elapsed)
 
-	// We expect some requests to be allowed (up to 5) and some to be limited.
+	// We expect some requests to be allowed (up to ~5-10) and some to be limited.
 	assert.Greater(t, ok, 0, "some requests should be allowed")
 	assert.Greater(t, limited, 0, "some requests should be rate-limited")
 }
