@@ -174,15 +174,37 @@ func main() {
 	}
 
 	// Start HTTP server with metrics and admin endpoints.
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
 
 	adminHandler := admin.New(srv.StreamStats, store, cfg)
-	adminHandler.Register(mux)
+
+	// If AdminAddr is set, serve admin/debug endpoints on a separate listener
+	// (typically bound to localhost). Otherwise, co-locate with metrics.
+	var adminServer *http.Server
+	if cfg.Server.AdminAddr != "" {
+		adminMux := http.NewServeMux()
+		adminHandler.Register(adminMux)
+		adminServer = &http.Server{
+			Addr:    cfg.Server.AdminAddr,
+			Handler: adminMux,
+		}
+		// Health/readyz still on metrics for load balancer probes.
+		metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+		})
+		metricsMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ready"}` + "\n"))
+		})
+	} else {
+		adminHandler.Register(metricsMux)
+	}
 
 	metricsServer := &http.Server{
 		Addr:    cfg.Server.MetricsAddr,
-		Handler: mux,
+		Handler: metricsMux,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -194,6 +216,15 @@ func main() {
 			logger.Error("metrics server error", zap.Error(err))
 		}
 	}()
+
+	if adminServer != nil {
+		go func() {
+			logger.Info("starting admin server", zap.String("addr", cfg.Server.AdminAddr))
+			if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("admin server error", zap.Error(err))
+			}
+		}()
+	}
 
 	go func() {
 		logger.Info("starting rlqs server", zap.String("addr", lis.Addr().String()))
@@ -213,6 +244,7 @@ func main() {
 				for newCfg := range cfgCh {
 					newEngine := buildEngine(newCfg)
 					srv.SwapEngine(newEngine)
+					adminHandler.UpdateConfig(newCfg)
 					logger.Info("engine hot-reloaded with new config")
 				}
 			}()
@@ -229,6 +261,11 @@ func main() {
 	// Shutdown metrics server.
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("metrics server shutdown error", zap.Error(err))
+	}
+	if adminServer != nil {
+		if err := adminServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("admin server shutdown error", zap.Error(err))
+		}
 	}
 
 	srv.GracefulStop()

@@ -34,6 +34,8 @@ type RedisConfig struct {
 type ServerConfig struct {
 	GRPCAddr    string    `yaml:"grpc_addr"`
 	MetricsAddr string    `yaml:"metrics_addr"`
+	AdminAddr   string    `yaml:"admin_addr"`  // Separate bind address for admin/debug endpoints (e.g. "127.0.0.1:9091")
+	AdminToken  string    `yaml:"admin_token"` // Bearer token required for /debug/* endpoints
 	TLS         TLSConfig `yaml:"tls"`
 
 	// Backpressure / server protection
@@ -187,6 +189,12 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("RLQS_TRACING_INSECURE"); v != "" {
 		cfg.Tracing.Insecure = v == "true" || v == "1"
+	}
+	if v := os.Getenv("RLQS_ADMIN_ADDR"); v != "" {
+		cfg.Server.AdminAddr = v
+	}
+	if v := os.Getenv("RLQS_ADMIN_TOKEN"); v != "" {
+		cfg.Server.AdminToken = v
 	}
 
 	return cfg, nil

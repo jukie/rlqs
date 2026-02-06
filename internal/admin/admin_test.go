@@ -19,6 +19,13 @@ func newTestHandler(streams []StreamInfo, store storage.BucketStore) *Handler {
 	})
 }
 
+func newAuthHandler(streams []StreamInfo, store storage.BucketStore, token string) *Handler {
+	return New(func() []StreamInfo { return streams }, store, &config.Config{
+		Server: config.ServerConfig{GRPCAddr: ":18081", MetricsAddr: ":9090", AdminToken: token},
+		Engine: config.EngineConfig{DefaultRPS: 100},
+	})
+}
+
 func TestHealthz(t *testing.T) {
 	h := newTestHandler(nil, storage.NewMemoryStorage())
 	mux := http.NewServeMux()
@@ -134,4 +141,170 @@ func TestDebugConfig(t *testing.T) {
 	// Verify config structure is present (Go struct fields are capitalized in JSON).
 	assert.Contains(t, body, "Server")
 	assert.Contains(t, body, "Engine")
+}
+
+func TestDebugConfigRedactsSensitiveFields(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			GRPCAddr:   ":18081",
+			AdminToken: "secret-token",
+			TLS: config.TLSConfig{
+				CertFile: "/etc/ssl/cert.pem",
+				KeyFile:  "/etc/ssl/key.pem",
+				CAFile:   "/etc/ssl/ca.pem",
+			},
+		},
+		Storage: config.StorageConfig{
+			Type:  "redis",
+			Redis: config.RedisConfig{Addr: "redis:6379"},
+		},
+		Tracing: config.TracingConfig{
+			Endpoint: "localhost:4317",
+		},
+	}
+	h := New(func() []StreamInfo { return nil }, storage.NewMemoryStorage(), cfg)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	req := httptest.NewRequest("GET", "/debug/config", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	server := body["Server"].(map[string]any)
+	tls := server["TLS"].(map[string]any)
+	assert.Equal(t, "[REDACTED]", tls["CertFile"])
+	assert.Equal(t, "[REDACTED]", tls["KeyFile"])
+	assert.Equal(t, "[REDACTED]", tls["CAFile"])
+	assert.Equal(t, "[REDACTED]", server["AdminToken"])
+
+	stor := body["Storage"].(map[string]any)
+	redis := stor["Redis"].(map[string]any)
+	assert.Equal(t, "[REDACTED]", redis["Addr"])
+
+	tracing := body["Tracing"].(map[string]any)
+	assert.Equal(t, "[REDACTED]", tracing["Endpoint"])
+}
+
+func TestDebugConfigEmptyFieldsNotRedacted(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{GRPCAddr: ":18081"},
+	}
+	h := New(func() []StreamInfo { return nil }, storage.NewMemoryStorage(), cfg)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/debug/config", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	server := body["Server"].(map[string]any)
+	tls := server["TLS"].(map[string]any)
+	assert.Equal(t, "", tls["CertFile"])
+	assert.Equal(t, "", tls["KeyFile"])
+	assert.Equal(t, "", tls["CAFile"])
+}
+
+func TestAuthRequired(t *testing.T) {
+	h := newAuthHandler(nil, storage.NewMemoryStorage(), "my-secret")
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	endpoints := []string{"/debug/streams", "/debug/buckets", "/debug/config"}
+
+	t.Run("no token returns 401", func(t *testing.T) {
+		for _, ep := range endpoints {
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, httptest.NewRequest("GET", ep, nil))
+			assert.Equal(t, http.StatusUnauthorized, w.Code, "endpoint: %s", ep)
+		}
+	})
+
+	t.Run("wrong token returns 401", func(t *testing.T) {
+		for _, ep := range endpoints {
+			req := httptest.NewRequest("GET", ep, nil)
+			req.Header.Set("Authorization", "Bearer wrong-token")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusUnauthorized, w.Code, "endpoint: %s", ep)
+		}
+	})
+
+	t.Run("correct token returns 200", func(t *testing.T) {
+		for _, ep := range endpoints {
+			req := httptest.NewRequest("GET", ep, nil)
+			req.Header.Set("Authorization", "Bearer my-secret")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusOK, w.Code, "endpoint: %s", ep)
+		}
+	})
+
+	t.Run("healthz does not require auth", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", "/healthz", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("readyz does not require auth", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+}
+
+func TestNoAuthWhenTokenEmpty(t *testing.T) {
+	h := newTestHandler(nil, storage.NewMemoryStorage())
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	// Debug endpoints should be accessible without auth when no token is configured.
+	endpoints := []string{"/debug/streams", "/debug/buckets", "/debug/config"}
+	for _, ep := range endpoints {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", ep, nil))
+		assert.Equal(t, http.StatusOK, w.Code, "endpoint: %s", ep)
+	}
+}
+
+func TestUpdateConfig(t *testing.T) {
+	cfg1 := &config.Config{
+		Server: config.ServerConfig{GRPCAddr: ":18081", MetricsAddr: ":9090"},
+		Engine: config.EngineConfig{DefaultRPS: 100},
+	}
+	cfg2 := &config.Config{
+		Server: config.ServerConfig{GRPCAddr: ":18081", MetricsAddr: ":9090"},
+		Engine: config.EngineConfig{DefaultRPS: 500},
+	}
+
+	h := New(func() []StreamInfo { return nil }, storage.NewMemoryStorage(), cfg1)
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	// Initial config
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/debug/config", nil))
+	var body1 map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body1))
+	engine1 := body1["Engine"].(map[string]any)
+	assert.Equal(t, float64(100), engine1["DefaultRPS"])
+
+	// Update config
+	h.UpdateConfig(cfg2)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/debug/config", nil))
+	var body2 map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body2))
+	engine2 := body2["Engine"].(map[string]any)
+	assert.Equal(t, float64(500), engine2["DefaultRPS"])
 }
