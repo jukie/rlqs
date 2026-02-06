@@ -34,8 +34,9 @@ static_resources:
                             typed_config:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.rate_limit_quota.v3.RateLimitQuotaBucketSettings
                               bucket_id_builder:
-                                name:
-                                  string_value: "catch-all"
+                                bucket_id_builder:
+                                  name:
+                                    string_value: "catch-all"
                               reporting_interval: 2s
                               no_assignment_behavior:
                                 fallback_rate_limit:
