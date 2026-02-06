@@ -86,8 +86,12 @@ type RLQSServer struct {
 	store  storage.BucketStore
 	engine atomic.Value // holds quota.Engine
 
-	maxBucketsPerStream int
-	engineTimeout       time.Duration
+	maxBucketsPerStream  int
+	maxReportsPerMessage int
+	maxBucketEntries     int
+	maxBucketKeyLen      int
+	maxBucketValueLen    int
+	engineTimeout        time.Duration
 
 	// mu protects streams and bucketRefs.
 	mu         sync.Mutex
@@ -106,14 +110,18 @@ type streamState struct {
 }
 
 // NewRLQS creates a new RLQSServer with full protocol support.
-func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, maxBuckets int, engineTimeout time.Duration) *RLQSServer {
+func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig) *RLQSServer {
 	s := &RLQSServer{
-		logger:              logger,
-		store:               store,
-		maxBucketsPerStream: maxBuckets,
-		engineTimeout:       engineTimeout,
-		streams:             make(map[*streamState]struct{}),
-		bucketRefs:          make(map[storage.BucketKey]int),
+		logger:               logger,
+		store:                store,
+		maxBucketsPerStream:  cfg.MaxBucketsPerStream,
+		maxReportsPerMessage: cfg.MaxReportsPerMessage,
+		maxBucketEntries:     cfg.MaxBucketEntries,
+		maxBucketKeyLen:      cfg.MaxBucketKeyLen,
+		maxBucketValueLen:    cfg.MaxBucketValueLen,
+		engineTimeout:        cfg.EngineTimeout.Duration,
+		streams:              make(map[*streamState]struct{}),
+		bucketRefs:           make(map[storage.BucketKey]int),
 	}
 	s.engine.Store(engine)
 	return s
@@ -127,8 +135,8 @@ func (s *RLQSServer) SwapEngine(e quota.Engine) {
 }
 
 // Register adds the RLQS service to the gRPC server using the full protocol implementation.
-func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, engine quota.Engine, maxBuckets int, engineTimeout time.Duration) {
-	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine, maxBuckets, engineTimeout))
+func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig) {
+	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine, cfg))
 }
 
 // StreamRateLimitQuotas implements the bidirectional streaming RPC.
@@ -201,11 +209,38 @@ func (s *RLQSServer) handleMessage(
 		return nil
 	}
 
+	// Enforce max reports per message to prevent unbounded batch sizes.
+	if s.maxReportsPerMessage > 0 && len(usages) > s.maxReportsPerMessage {
+		return status.Errorf(codes.ResourceExhausted,
+			"too many usage reports in a single message: %d (limit: %d)", len(usages), s.maxReportsPerMessage)
+	}
+
 	// Build reports and track subscriptions.
 	reports := make([]storage.UsageReport, 0, len(usages))
 	for _, u := range usages {
 		if u.GetBucketId() == nil || len(u.GetBucketId().GetBucket()) == 0 {
 			continue
+		}
+
+		// Validate BucketId map bounds.
+		bucket := u.GetBucketId().GetBucket()
+		if s.maxBucketEntries > 0 && len(bucket) > s.maxBucketEntries {
+			return status.Errorf(codes.InvalidArgument,
+				"bucket_id has too many entries: %d (limit: %d)", len(bucket), s.maxBucketEntries)
+		}
+		for k, v := range bucket {
+			if k == "" || v == "" {
+				return status.Errorf(codes.InvalidArgument,
+					"bucket_id keys and values must be non-empty")
+			}
+			if s.maxBucketKeyLen > 0 && len(k) > s.maxBucketKeyLen {
+				return status.Errorf(codes.InvalidArgument,
+					"bucket_id key exceeds max length: %d (limit: %d)", len(k), s.maxBucketKeyLen)
+			}
+			if s.maxBucketValueLen > 0 && len(v) > s.maxBucketValueLen {
+				return status.Errorf(codes.InvalidArgument,
+					"bucket_id value exceeds max length: %d (limit: %d)", len(v), s.maxBucketValueLen)
+			}
 		}
 		key := storage.BucketKeyFromProto(u.GetBucketId())
 
@@ -410,7 +445,7 @@ type Server struct {
 func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig, opts ...grpc.ServerOption) *Server {
 	grpcSrv := grpc.NewServer(opts...)
 	healthSrv := health.NewServer()
-	rlqsSrv := NewRLQS(logger, store, engine, cfg.MaxBucketsPerStream, cfg.EngineTimeout.Duration)
+	rlqsSrv := NewRLQS(logger, store, engine, cfg)
 
 	rlqspb.RegisterRateLimitQuotaServiceServer(grpcSrv, rlqsSrv)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)

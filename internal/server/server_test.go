@@ -64,7 +64,7 @@ type testEnv struct {
 	conn   *grpc.ClientConn
 }
 
-func setupWithLimits(t *testing.T, maxBuckets int, engineTimeout time.Duration) *testEnv {
+func setupWithConfig(t *testing.T, cfg config.ServerConfig) *testEnv {
 	t.Helper()
 	logger := zaptest.NewLogger(t)
 
@@ -72,7 +72,7 @@ func setupWithLimits(t *testing.T, maxBuckets int, engineTimeout time.Duration) 
 	eng := &fakeEngine{}
 
 	srv := grpc.NewServer()
-	Register(srv, logger, st, eng, maxBuckets, engineTimeout)
+	Register(srv, logger, st, eng, cfg)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -104,7 +104,9 @@ func setup(t *testing.T) *testEnv {
 	eng := &fakeEngine{}
 
 	srv := grpc.NewServer()
-	Register(srv, logger, st, eng, 0, 5*time.Second)
+	Register(srv, logger, st, eng, config.ServerConfig{
+		EngineTimeout: config.Duration{Duration: 5 * time.Second},
+	})
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -458,7 +460,10 @@ func TestNoResponseWhenEngineReturnsNoActions(t *testing.T) {
 }
 
 func TestMaxBucketsPerStreamExceeded(t *testing.T) {
-	env := setupWithLimits(t, 2, 5*time.Second)
+	env := setupWithConfig(t, config.ServerConfig{
+		MaxBucketsPerStream: 2,
+		EngineTimeout:       config.Duration{Duration: 5 * time.Second},
+	})
 	defer env.teardown()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -613,7 +618,7 @@ func TestTLSOptionServerTLS(t *testing.T) {
 	st := &fakeStore{}
 	eng := &fakeEngine{}
 	srv := grpc.NewServer(opt)
-	Register(srv, logger, st, eng, 0, 5*time.Second)
+	Register(srv, logger, st, eng, config.ServerConfig{EngineTimeout: config.Duration{Duration: 5 * time.Second}})
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -689,7 +694,7 @@ func TestTLSOptionMTLS(t *testing.T) {
 	st := &fakeStore{}
 	eng := &fakeEngine{}
 	srv := grpc.NewServer(opt)
-	Register(srv, logger, st, eng, 0, 5*time.Second)
+	Register(srv, logger, st, eng, config.ServerConfig{EngineTimeout: config.Duration{Duration: 5 * time.Second}})
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -771,7 +776,7 @@ func TestTLSOptionMTLSRejectsNoClientCert(t *testing.T) {
 
 	logger := zaptest.NewLogger(t)
 	srv := grpc.NewServer(opt)
-	Register(srv, logger, &fakeStore{}, &fakeEngine{}, 0, 5*time.Second)
+	Register(srv, logger, &fakeStore{}, &fakeEngine{}, config.ServerConfig{EngineTimeout: config.Duration{Duration: 5 * time.Second}})
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -914,6 +919,284 @@ func TestServerSwapEngine(t *testing.T) {
 	}
 	if resp.GetBucketAction()[0].GetQuotaAssignmentAction() == nil {
 		t.Fatal("expected assignment action after engine swap")
+	}
+}
+
+// --- Input validation & DoS protection tests ---
+
+func TestMaxReportsPerMessageExceeded(t *testing.T) {
+	env := setupWithConfig(t, config.ServerConfig{
+		MaxReportsPerMessage: 2,
+		EngineTimeout:        config.Duration{Duration: 5 * time.Second},
+	})
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send 3 reports which exceeds the limit of 2.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain: "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
+			usageReport(bucketID("name", "a"), 1, 0),
+			usageReport(bucketID("name", "b"), 1, 0),
+			usageReport(bucketID("name", "c"), 1, 0),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.ResourceExhausted {
+			t.Fatalf("expected ResourceExhausted, got %v", err)
+		}
+		break
+	}
+}
+
+func TestMaxReportsPerMessageAtLimit(t *testing.T) {
+	env := setupWithConfig(t, config.ServerConfig{
+		MaxReportsPerMessage: 2,
+		EngineTimeout:        config.Duration{Duration: 5 * time.Second},
+	})
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send exactly 2 reports — should succeed.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain: "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
+			usageReport(bucketID("name", "a"), 1, 0),
+			usageReport(bucketID("name", "b"), 1, 0),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	if len(env.store.usages) != 2 {
+		t.Fatalf("expected 2 usages, got %d", len(env.store.usages))
+	}
+}
+
+func TestBucketIdTooManyEntries(t *testing.T) {
+	env := setupWithConfig(t, config.ServerConfig{
+		MaxBucketEntries: 2,
+		EngineTimeout:    config.Duration{Duration: 5 * time.Second},
+	})
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// BucketId with 3 entries exceeds the limit of 2.
+	bid := &rlqspb.BucketId{Bucket: map[string]string{
+		"a": "1", "b": "2", "c": "3",
+	}}
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 1, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.InvalidArgument {
+			t.Fatalf("expected InvalidArgument, got %v", err)
+		}
+		break
+	}
+}
+
+func TestBucketIdKeyTooLong(t *testing.T) {
+	env := setupWithConfig(t, config.ServerConfig{
+		MaxBucketKeyLen: 5,
+		EngineTimeout:   config.Duration{Duration: 5 * time.Second},
+	})
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bid := &rlqspb.BucketId{Bucket: map[string]string{
+		"toolong": "val",
+	}}
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 1, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.InvalidArgument {
+			t.Fatalf("expected InvalidArgument, got %v", err)
+		}
+		break
+	}
+}
+
+func TestBucketIdValueTooLong(t *testing.T) {
+	env := setupWithConfig(t, config.ServerConfig{
+		MaxBucketValueLen: 3,
+		EngineTimeout:     config.Duration{Duration: 5 * time.Second},
+	})
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bid := &rlqspb.BucketId{Bucket: map[string]string{
+		"k": "toolong",
+	}}
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 1, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.InvalidArgument {
+			t.Fatalf("expected InvalidArgument, got %v", err)
+		}
+		break
+	}
+}
+
+func TestBucketIdEmptyKeyRejected(t *testing.T) {
+	env := setup(t)
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty key should trigger InvalidArgument.
+	bid := &rlqspb.BucketId{Bucket: map[string]string{
+		"": "val",
+	}}
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 1, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.InvalidArgument {
+			t.Fatalf("expected InvalidArgument, got %v", err)
+		}
+		break
+	}
+}
+
+func TestBucketIdEmptyValueRejected(t *testing.T) {
+	env := setup(t)
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty value should trigger InvalidArgument.
+	bid := &rlqspb.BucketId{Bucket: map[string]string{
+		"key": "",
+	}}
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 1, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.InvalidArgument {
+			t.Fatalf("expected InvalidArgument, got %v", err)
+		}
+		break
 	}
 }
 

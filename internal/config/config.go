@@ -39,7 +39,13 @@ type ServerConfig struct {
 	// Backpressure / server protection
 	MaxConcurrentStreams uint32   `yaml:"max_concurrent_streams"`
 	MaxBucketsPerStream  int      `yaml:"max_buckets_per_stream"`
+	MaxReportsPerMessage int      `yaml:"max_reports_per_message"`
 	EngineTimeout        Duration `yaml:"engine_timeout"`
+
+	// BucketId validation limits
+	MaxBucketEntries  int `yaml:"max_bucket_entries"`
+	MaxBucketKeyLen   int `yaml:"max_bucket_key_len"`
+	MaxBucketValueLen int `yaml:"max_bucket_value_len"`
 
 	// Keepalive
 	KeepaliveMaxIdleTime  Duration `yaml:"keepalive_max_idle_time"`
@@ -122,7 +128,11 @@ func Load(path string) (*Config, error) {
 			MetricsAddr:           ":9090",
 			MaxConcurrentStreams:  1000,
 			MaxBucketsPerStream:   100,
+			MaxReportsPerMessage:  1000,
 			EngineTimeout:         Duration{5 * time.Second},
+			MaxBucketEntries:      100,
+			MaxBucketKeyLen:       256,
+			MaxBucketValueLen:     1024,
 			KeepaliveMaxIdleTime:  Duration{5 * time.Minute},
 			KeepalivePingInterval: Duration{1 * time.Minute},
 			KeepalivePingTimeout:  Duration{20 * time.Second},
