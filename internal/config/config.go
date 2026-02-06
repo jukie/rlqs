@@ -25,8 +25,9 @@ type RedisConfig struct {
 }
 
 type ServerConfig struct {
-	GRPCAddr    string `yaml:"grpc_addr"`
-	MetricsAddr string `yaml:"metrics_addr"`
+	GRPCAddr    string    `yaml:"grpc_addr"`
+	MetricsAddr string    `yaml:"metrics_addr"`
+	TLS         TLSConfig `yaml:"tls"`
 
 	// Backpressure / server protection
 	MaxConcurrentStreams uint32   `yaml:"max_concurrent_streams"`
@@ -37,6 +38,12 @@ type ServerConfig struct {
 	KeepaliveMaxIdleTime  Duration `yaml:"keepalive_max_idle_time"`
 	KeepalivePingInterval Duration `yaml:"keepalive_ping_interval"`
 	KeepalivePingTimeout  Duration `yaml:"keepalive_ping_timeout"`
+}
+
+type TLSConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	CAFile   string `yaml:"ca_file"`
 }
 
 type Duration struct {
@@ -113,6 +120,15 @@ func Load(path string) (*Config, error) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Engine.ReportingInterval = Duration{d}
 		}
+	}
+	if v := os.Getenv("RLQS_TLS_CERT_FILE"); v != "" {
+		cfg.Server.TLS.CertFile = v
+	}
+	if v := os.Getenv("RLQS_TLS_KEY_FILE"); v != "" {
+		cfg.Server.TLS.KeyFile = v
+	}
+	if v := os.Getenv("RLQS_TLS_CA_FILE"); v != "" {
+		cfg.Server.TLS.CAFile = v
 	}
 	if v := os.Getenv("RLQS_STORAGE_TYPE"); v != "" {
 		cfg.Storage.Type = v

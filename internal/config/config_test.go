@@ -128,6 +128,59 @@ func TestLoadStorageEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadTLSYAML(t *testing.T) {
+	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	_, err = f.WriteString(`server:
+  tls:
+    cert_file: "/path/to/cert.pem"
+    key_file: "/path/to/key.pem"
+    ca_file: "/path/to/ca.pem"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.TLS.CertFile != "/path/to/cert.pem" {
+		t.Fatalf("expected /path/to/cert.pem, got %s", cfg.Server.TLS.CertFile)
+	}
+	if cfg.Server.TLS.KeyFile != "/path/to/key.pem" {
+		t.Fatalf("expected /path/to/key.pem, got %s", cfg.Server.TLS.KeyFile)
+	}
+	if cfg.Server.TLS.CAFile != "/path/to/ca.pem" {
+		t.Fatalf("expected /path/to/ca.pem, got %s", cfg.Server.TLS.CAFile)
+	}
+}
+
+func TestLoadTLSEnvOverrides(t *testing.T) {
+	t.Setenv("RLQS_TLS_CERT_FILE", "/env/cert.pem")
+	t.Setenv("RLQS_TLS_KEY_FILE", "/env/key.pem")
+	t.Setenv("RLQS_TLS_CA_FILE", "/env/ca.pem")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.TLS.CertFile != "/env/cert.pem" {
+		t.Fatalf("expected /env/cert.pem, got %s", cfg.Server.TLS.CertFile)
+	}
+	if cfg.Server.TLS.KeyFile != "/env/key.pem" {
+		t.Fatalf("expected /env/key.pem, got %s", cfg.Server.TLS.KeyFile)
+	}
+	if cfg.Server.TLS.CAFile != "/env/ca.pem" {
+		t.Fatalf("expected /env/ca.pem, got %s", cfg.Server.TLS.CAFile)
+	}
+}
+
 func TestLoadEnvOverridesYAML(t *testing.T) {
 	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
 	if err != nil {

@@ -115,7 +115,19 @@ func main() {
 	store := buildStore(cfg, logger)
 	eng := buildEngine(cfg)
 
-	srv := server.New(logger, store, eng, cfg.Server, server.DefaultServerOptions(logger, cfg.Server)...)
+	opts := server.DefaultServerOptions(logger, cfg.Server)
+	if cfg.Server.TLS.CertFile != "" {
+		tlsOpt, err := server.TLSOption(cfg.Server.TLS)
+		if err != nil {
+			logger.Fatal("failed to configure TLS", zap.Error(err))
+		}
+		opts = append(opts, tlsOpt)
+		logger.Info("TLS enabled",
+			zap.String("cert", cfg.Server.TLS.CertFile),
+			zap.Bool("mtls", cfg.Server.TLS.CAFile != ""))
+	}
+
+	srv := server.New(logger, store, eng, cfg.Server, opts...)
 
 	lis, err := net.Listen("tcp", cfg.Server.GRPCAddr)
 	if err != nil {

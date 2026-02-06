@@ -2,8 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +21,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
@@ -354,4 +359,34 @@ func (s *Server) GracefulStop() {
 // GRPCServer returns the underlying grpc.Server (for testing).
 func (s *Server) GRPCServer() *grpc.Server {
 	return s.grpcServer
+}
+
+// TLSOption builds a grpc.ServerOption from TLS configuration.
+// If CAFile is set, mTLS is enforced (clients must present a valid certificate).
+// Returns nil if no TLS is configured (CertFile is empty).
+func TLSOption(tlsCfg config.TLSConfig) (grpc.ServerOption, error) {
+	cert, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading server certificate: %w", err)
+	}
+
+	tc := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	if tlsCfg.CAFile != "" {
+		caPEM, err := os.ReadFile(tlsCfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("CA file contains no valid certificates")
+		}
+		tc.ClientCAs = pool
+		tc.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return grpc.Creds(credentials.NewTLS(tc)), nil
 }

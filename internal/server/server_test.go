@@ -2,8 +2,17 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -11,10 +20,12 @@ import (
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/storage"
 )
 
@@ -425,5 +436,329 @@ func TestMaxBucketsPerStreamExceeded(t *testing.T) {
 			t.Fatalf("expected ResourceExhausted, got %v", err)
 		}
 		break
+	}
+}
+
+// --- TLS test helpers ---
+
+// generateTestCA creates a self-signed CA certificate and key for testing.
+func generateTestCA(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
+
+// generateTestCert creates a certificate signed by the given CA for testing.
+func generateTestCert(t *testing.T, caCertPEM, caKeyPEM []byte) (certPEM, keyPEM []byte) {
+	t.Helper()
+	caBlock, _ := pem.Decode(caCertPEM)
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caKeyBlock, _ := pem.Decode(caKeyPEM)
+	caKey, err := x509.ParseECPrivateKey(caKeyBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM
+}
+
+func writeTempFile(t *testing.T, data []byte) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "rlqs-tls-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	return f.Name()
+}
+
+// --- TLS tests ---
+
+func TestTLSOptionServerTLS(t *testing.T) {
+	caCertPEM, caKeyPEM := generateTestCA(t)
+	serverCertPEM, serverKeyPEM := generateTestCert(t, caCertPEM, caKeyPEM)
+
+	certFile := writeTempFile(t, serverCertPEM)
+	keyFile := writeTempFile(t, serverKeyPEM)
+
+	opt, err := TLSOption(config.TLSConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up server with TLS.
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+	eng := &fakeEngine{}
+	srv := grpc.NewServer(opt)
+	Register(srv, logger, st, eng, 0, 5*time.Second)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	// Client must use TLS to connect.
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caCertPEM)
+	creds := credentials.NewClientTLSFromCert(pool, "")
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(creds))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bid := bucketID("name", "tls-test")
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(st.usages) != 1 {
+		t.Fatalf("expected 1 usage over TLS, got %d", len(st.usages))
+	}
+}
+
+func TestTLSOptionMTLS(t *testing.T) {
+	caCertPEM, caKeyPEM := generateTestCA(t)
+	serverCertPEM, serverKeyPEM := generateTestCert(t, caCertPEM, caKeyPEM)
+	clientCertPEM, clientKeyPEM := generateTestCert(t, caCertPEM, caKeyPEM)
+
+	certFile := writeTempFile(t, serverCertPEM)
+	keyFile := writeTempFile(t, serverKeyPEM)
+	caFile := writeTempFile(t, caCertPEM)
+
+	opt, err := TLSOption(config.TLSConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+		CAFile:   caFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+	eng := &fakeEngine{}
+	srv := grpc.NewServer(opt)
+	Register(srv, logger, st, eng, 0, 5*time.Second)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	// Client with valid client cert should succeed.
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caCertPEM)
+
+	clientCert, err := tls.X509KeyPair(clientCertPEM, clientKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	creds := credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      pool,
+	})
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(creds))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bid := bucketID("name", "mtls-test")
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 5, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream.CloseSend()
+	for {
+		_, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(st.usages) != 1 {
+		t.Fatalf("expected 1 usage over mTLS, got %d", len(st.usages))
+	}
+}
+
+func TestTLSOptionMTLSRejectsNoClientCert(t *testing.T) {
+	caCertPEM, caKeyPEM := generateTestCA(t)
+	serverCertPEM, serverKeyPEM := generateTestCert(t, caCertPEM, caKeyPEM)
+
+	certFile := writeTempFile(t, serverCertPEM)
+	keyFile := writeTempFile(t, serverKeyPEM)
+	caFile := writeTempFile(t, caCertPEM)
+
+	opt, err := TLSOption(config.TLSConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+		CAFile:   caFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := zaptest.NewLogger(t)
+	srv := grpc.NewServer(opt)
+	Register(srv, logger, &fakeStore{}, &fakeEngine{}, 0, 5*time.Second)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	// Client without client cert — server should reject.
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(caCertPEM)
+	creds := credentials.NewTLS(&tls.Config{
+		RootCAs: pool,
+	})
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(creds))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = client.StreamRateLimitQuotas(ctx)
+	if err == nil {
+		t.Fatal("expected error when no client cert provided for mTLS")
+	}
+}
+
+func TestTLSOptionInvalidCertFile(t *testing.T) {
+	_, err := TLSOption(config.TLSConfig{
+		CertFile: "/nonexistent/cert.pem",
+		KeyFile:  "/nonexistent/key.pem",
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent cert file")
+	}
+}
+
+func TestTLSOptionInvalidCAFile(t *testing.T) {
+	caCertPEM, caKeyPEM := generateTestCA(t)
+	serverCertPEM, serverKeyPEM := generateTestCert(t, caCertPEM, caKeyPEM)
+
+	certFile := writeTempFile(t, serverCertPEM)
+	keyFile := writeTempFile(t, serverKeyPEM)
+
+	_, err := TLSOption(config.TLSConfig{
+		CertFile: certFile,
+		KeyFile:  keyFile,
+		CAFile:   "/nonexistent/ca.pem",
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent CA file")
 	}
 }
