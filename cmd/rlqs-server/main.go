@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jukie/rlqs/internal/config"
+	"github.com/jukie/rlqs/internal/policy"
 	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/server"
 	"github.com/jukie/rlqs/internal/storage"
@@ -20,6 +21,61 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+// buildEngine creates a quota engine from the configuration.
+// If policies are defined, returns a PolicyEngine; otherwise returns DefaultEngine.
+func buildEngine(cfg *config.Config) quota.Engine {
+	defaultStrategy := &typev3.RateLimitStrategy{
+		Strategy: &typev3.RateLimitStrategy_TokenBucket{
+			TokenBucket: &typev3.TokenBucket{
+				MaxTokens:     uint32(cfg.Engine.DefaultRPS),
+				TokensPerFill: wrapperspb.UInt32(uint32(cfg.Engine.DefaultRPS)),
+				FillInterval:  durationpb.New(cfg.Engine.ReportingInterval.Duration),
+			},
+		},
+	}
+	defaultTTL := cfg.Engine.ReportingInterval.Duration * 2
+
+	// If no policies configured, use DefaultEngine
+	if len(cfg.Engine.Policies) == 0 {
+		return quota.NewDefaultEngine(quota.DefaultEngineConfig{
+			DefaultStrategy: defaultStrategy,
+			AssignmentTTL:   defaultTTL,
+		})
+	}
+
+	// Build PolicyEngine from config
+	policies := make([]policy.Policy, 0, len(cfg.Engine.Policies))
+	for _, pc := range cfg.Engine.Policies {
+		ttl := pc.AssignmentTTL.Duration
+		if ttl == 0 {
+			ttl = defaultTTL
+		}
+
+		policies = append(policies, policy.Policy{
+			DomainPattern:    pc.DomainPattern,
+			BucketKeyPattern: pc.BucketKeyPattern,
+			Strategy: &typev3.RateLimitStrategy{
+				Strategy: &typev3.RateLimitStrategy_TokenBucket{
+					TokenBucket: &typev3.TokenBucket{
+						MaxTokens:     uint32(pc.RPS),
+						TokensPerFill: wrapperspb.UInt32(uint32(pc.RPS)),
+						FillInterval:  durationpb.New(cfg.Engine.ReportingInterval.Duration),
+					},
+				},
+			},
+			AssignmentTTL: ttl,
+		})
+	}
+
+	return policy.NewPolicyEngine(policy.PolicyEngineConfig{
+		Policies: policies,
+		DefaultPolicy: policy.Policy{
+			Strategy:      defaultStrategy,
+			AssignmentTTL: defaultTTL,
+		},
+	})
+}
 
 func main() {
 	configPath := flag.String("config", "", "path to config file")
@@ -37,18 +93,7 @@ func main() {
 	}
 
 	store := storage.NewMemoryStorage()
-	eng := quota.NewDefaultEngine(quota.DefaultEngineConfig{
-		DefaultStrategy: &typev3.RateLimitStrategy{
-			Strategy: &typev3.RateLimitStrategy_TokenBucket{
-				TokenBucket: &typev3.TokenBucket{
-					MaxTokens:     uint32(cfg.Engine.DefaultRPS),
-					TokensPerFill: wrapperspb.UInt32(uint32(cfg.Engine.DefaultRPS)),
-					FillInterval:  durationpb.New(cfg.Engine.ReportingInterval.Duration),
-				},
-			},
-		},
-		AssignmentTTL: cfg.Engine.ReportingInterval.Duration * 2,
-	})
+	eng := buildEngine(cfg)
 
 	srv := server.New(logger, store, eng, server.DefaultServerOptions(logger)...)
 
