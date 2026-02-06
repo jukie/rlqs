@@ -1,0 +1,51 @@
+replicaCount: 2
+
+image:
+  repository: rlqs-server
+  tag: ""  # Defaults to appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  grpcPort: 18081
+  metricsPort: 9090
+
+config:
+  server:
+    grpc_addr: ":18081"
+    metrics_addr: ":9090"
+  engine:
+    default_rps: 100
+    reporting_interval: "10s"
+
+podDisruptionBudget:
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+
+podAnnotations: {}
+podLabels: {}
+
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}

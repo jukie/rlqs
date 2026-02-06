@@ -1,0 +1,7 @@
+RLQS has been deployed with {{ .Values.replicaCount }} replicas.
+
+gRPC endpoint (for Envoy rate_limit_quota filter):
+  {{ include "rlqs.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.grpcPort }}
+
+Metrics endpoint:
+  {{ include "rlqs.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.metricsPort }}/metrics

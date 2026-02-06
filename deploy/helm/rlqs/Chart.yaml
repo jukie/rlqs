@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rlqs
+description: Envoy Rate Limit Quota Service (RLQS)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
