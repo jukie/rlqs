@@ -57,7 +57,11 @@ func TestDefaultEngine_ProcessUsageAssignment(t *testing.T) {
 
 func TestDefaultEngine_SkipsEmptyBucketId(t *testing.T) {
 	eng := NewDefaultEngine(DefaultEngineConfig{
-		DefaultStrategy: blanketRule(typev3.RateLimitStrategy_ALLOW_ALL),
+		DefaultStrategy: &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+				BlanketRule: typev3.RateLimitStrategy_ALLOW_ALL,
+			},
+		},
 	})
 
 	reports := []storage.UsageReport{
@@ -75,8 +79,12 @@ func TestDefaultEngine_SkipsEmptyBucketId(t *testing.T) {
 
 func TestDefaultEngine_MultipleBuckets(t *testing.T) {
 	eng := NewDefaultEngine(DefaultEngineConfig{
-		DefaultStrategy: blanketRule(typev3.RateLimitStrategy_ALLOW_ALL),
-		AssignmentTTL:   30 * time.Second,
+		DefaultStrategy: &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+				BlanketRule: typev3.RateLimitStrategy_ALLOW_ALL,
+			},
+		},
+		AssignmentTTL: 30 * time.Second,
 	})
 
 	reports := []storage.UsageReport{
