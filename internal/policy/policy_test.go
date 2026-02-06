@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -450,4 +451,81 @@ func TestPolicyWithDenyResponse(t *testing.T) {
 	if p.DenyResponse.ResponseHeadersToAdd["X-Rate-Limit-Reason"] != "blocked" {
 		t.Error("expected X-Rate-Limit-Reason header")
 	}
+}
+
+func TestCompilePatternsRejectsLongPatterns(t *testing.T) {
+	long := strings.Repeat("a", MaxPatternLength+1)
+
+	tests := []struct {
+		name    string
+		policy  Policy
+		wantErr string
+	}{
+		{
+			name:    "domain pattern too long",
+			policy:  Policy{DomainPattern: long},
+			wantErr: "domain pattern exceeds max length",
+		},
+		{
+			name:    "bucket key pattern too long",
+			policy:  Policy{BucketKeyPattern: long},
+			wantErr: "bucket key pattern exceeds max length",
+		},
+		{
+			name:   "pattern at max length is accepted",
+			policy: Policy{DomainPattern: strings.Repeat("a", MaxPatternLength)},
+		},
+		{
+			name:   "empty patterns are accepted",
+			policy: Policy{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.policy.compilePatterns()
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestNewRejectsLongPatterns(t *testing.T) {
+	long := strings.Repeat("a", MaxPatternLength+1)
+
+	t.Run("rejects long pattern in policy list", func(t *testing.T) {
+		_, err := New(EngineConfig{
+			Policies: []Policy{
+				{DomainPattern: long},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for long pattern, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds max length") {
+			t.Fatalf("expected max length error, got: %v", err)
+		}
+	})
+
+	t.Run("rejects long pattern in default policy", func(t *testing.T) {
+		_, err := New(EngineConfig{
+			DefaultPolicy: Policy{BucketKeyPattern: long},
+		})
+		if err == nil {
+			t.Fatal("expected error for long pattern, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds max length") {
+			t.Fatalf("expected max length error, got: %v", err)
+		}
+	})
 }

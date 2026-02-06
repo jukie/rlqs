@@ -13,6 +13,12 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+// MaxPatternLength is the maximum allowed length for regex patterns.
+// This prevents excessive memory use during compilation. Go's regexp
+// package uses RE2 syntax which is immune to catastrophic backtracking,
+// but extremely long patterns can still be expensive to compile.
+const MaxPatternLength = 1024
+
 // Policy defines a rate limiting policy that can be matched against
 // domains and bucket keys.
 type Policy struct {
@@ -38,9 +44,14 @@ type Policy struct {
 	bucketKeyRegex *regexp.Regexp
 }
 
-// compilePatterns pre-compiles regex patterns. Must be called before concurrent use.
+// compilePatterns pre-compiles regex patterns with length validation.
+// Must be called before concurrent use. Rejects patterns exceeding
+// MaxPatternLength to prevent resource exhaustion during compilation.
 func (p *Policy) compilePatterns() error {
 	if p.DomainPattern != "" {
+		if len(p.DomainPattern) > MaxPatternLength {
+			return fmt.Errorf("domain pattern exceeds max length (%d > %d)", len(p.DomainPattern), MaxPatternLength)
+		}
 		r, err := regexp.Compile(p.DomainPattern)
 		if err != nil {
 			return fmt.Errorf("invalid domain pattern %q: %w", p.DomainPattern, err)
@@ -48,6 +59,9 @@ func (p *Policy) compilePatterns() error {
 		p.domainRegex = r
 	}
 	if p.BucketKeyPattern != "" {
+		if len(p.BucketKeyPattern) > MaxPatternLength {
+			return fmt.Errorf("bucket key pattern exceeds max length (%d > %d)", len(p.BucketKeyPattern), MaxPatternLength)
+		}
 		r, err := regexp.Compile(p.BucketKeyPattern)
 		if err != nil {
 			return fmt.Errorf("invalid bucket key pattern %q: %w", p.BucketKeyPattern, err)
