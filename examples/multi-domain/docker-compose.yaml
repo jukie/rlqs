@@ -21,7 +21,7 @@ services:
 
   # Public-facing Envoy. Routes external traffic with strict rate limits.
   public-envoy:
-    image: envoyproxy/envoy:v1.32-latest
+    image: envoyproxy/envoy:v1.37-latest
     ports:
       - "10000:10000"
     volumes:
@@ -31,7 +31,7 @@ services:
 
   # Internal Envoy. Routes service-to-service traffic.
   internal-envoy:
-    image: envoyproxy/envoy:v1.32-latest
+    image: envoyproxy/envoy:v1.37-latest
     ports:
       - "10001:10000"
     volumes:

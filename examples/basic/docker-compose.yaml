@@ -10,7 +10,7 @@ services:
       - ./rlqs-config.yaml:/etc/rlqs/config.yaml:ro
 
   envoy:
-    image: envoyproxy/envoy:v1.32-latest
+    image: envoyproxy/envoy:v1.37-latest
     ports:
       - "10000:10000"   # HTTP listener
       - "9901:9901"     # Envoy admin
