@@ -353,6 +353,73 @@ func TestCleanupOnDisconnect(t *testing.T) {
 	}
 }
 
+func TestCleanupSharedBucketPreservesStorage(t *testing.T) {
+	env := setup(t)
+	defer env.teardown()
+
+	bid := bucketID("name", "shared")
+
+	// Stream 1 subscribes to the bucket.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	stream1, err := env.client.StreamRateLimitQuotas(ctx1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = stream1.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stream 2 subscribes to the same bucket.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+
+	stream2, err := env.client.StreamRateLimitQuotas(ctx2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = stream2.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 20, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Disconnect stream 1 — shared bucket should NOT be removed.
+	stream1.CloseSend()
+	for {
+		_, err := stream1.Recv()
+		if err != nil {
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if len(env.store.removed) != 0 {
+		t.Fatalf("expected 0 removed buckets while another stream holds a ref, got %d", len(env.store.removed))
+	}
+
+	// Disconnect stream 2 — now the bucket should be removed (last ref gone).
+	stream2.CloseSend()
+	for {
+		_, err := stream2.Recv()
+		if err != nil {
+			break
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	if len(env.store.removed) != 1 {
+		t.Fatalf("expected 1 removed bucket after last stream disconnected, got %d", len(env.store.removed))
+	}
+}
+
 func TestNoResponseWhenEngineReturnsNoActions(t *testing.T) {
 	env := setup(t)
 	defer env.teardown()

@@ -89,9 +89,10 @@ type RLQSServer struct {
 	maxBucketsPerStream int
 	engineTimeout       time.Duration
 
-	// mu protects streams.
-	mu      sync.Mutex
-	streams map[*streamState]struct{}
+	// mu protects streams and bucketRefs.
+	mu         sync.Mutex
+	streams    map[*streamState]struct{}
+	bucketRefs map[storage.BucketKey]int // domain-scoped key -> subscriber count
 }
 
 // streamState tracks the per-stream lifecycle.
@@ -111,6 +112,7 @@ func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine,
 		maxBucketsPerStream: maxBuckets,
 		engineTimeout:       engineTimeout,
 		streams:             make(map[*streamState]struct{}),
+		bucketRefs:          make(map[storage.BucketKey]int),
 	}
 	s.engine.Store(engine)
 	return s
@@ -209,6 +211,10 @@ func (s *RLQSServer) handleMessage(
 					"max buckets per stream exceeded (limit: %d)", s.maxBucketsPerStream)
 			}
 			ss.subscriptions[key] = struct{}{}
+			scopedKey := storage.DomainScopedKey(ss.domain, key)
+			s.mu.Lock()
+			s.bucketRefs[scopedKey]++
+			s.mu.Unlock()
 			metrics.ActiveBuckets.WithLabelValues(ss.domain).Inc()
 			s.logger.Debug("bucket subscribed",
 				zap.String("domain", ss.domain),
@@ -260,11 +266,28 @@ func (s *RLQSServer) handleMessage(
 	for _, a := range actions {
 		if a.GetAbandonAction() != nil {
 			key := storage.BucketKeyFromProto(a.GetBucketId())
-			delete(ss.subscriptions, key)
-			metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
-			s.logger.Debug("bucket abandoned",
-				zap.String("domain", ss.domain),
-				zap.String("bucket_key", string(key)))
+			if _, exists := ss.subscriptions[key]; exists {
+				delete(ss.subscriptions, key)
+				scopedKey := storage.DomainScopedKey(ss.domain, key)
+				s.mu.Lock()
+				s.bucketRefs[scopedKey]--
+				if s.bucketRefs[scopedKey] <= 0 {
+					delete(s.bucketRefs, scopedKey)
+					s.mu.Unlock()
+					if err := s.store.RemoveBucket(ctx, ss.domain, key); err != nil {
+						s.logger.Error("failed to remove abandoned bucket",
+							zap.String("domain", ss.domain),
+							zap.String("bucket_key", string(key)),
+							zap.Error(err))
+					}
+				} else {
+					s.mu.Unlock()
+				}
+				metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
+				s.logger.Debug("bucket abandoned",
+					zap.String("domain", ss.domain),
+					zap.String("bucket_key", string(key)))
+			}
 		}
 	}
 
@@ -280,6 +303,8 @@ func (s *RLQSServer) handleMessage(
 }
 
 // cleanupStream removes stream state and cleans up bucket subscriptions.
+// Shared bucket storage is only removed when no other streams reference the bucket,
+// preventing HA data loss when multiple RLQS instances share Redis state.
 func (s *RLQSServer) cleanupStream(ss *streamState) {
 	s.mu.Lock()
 	delete(s.streams, ss)
@@ -295,11 +320,21 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 
 	for key := range ss.subscriptions {
 		metrics.ActiveBuckets.WithLabelValues(ss.domain).Dec()
-		if err := s.store.RemoveBucket(context.Background(), ss.domain, key); err != nil {
-			s.logger.Error("failed to remove bucket on disconnect",
-				zap.String("domain", ss.domain),
-				zap.String("bucket_key", string(key)),
-				zap.Error(err))
+		scopedKey := storage.DomainScopedKey(ss.domain, key)
+		s.mu.Lock()
+		s.bucketRefs[scopedKey]--
+		shouldRemove := s.bucketRefs[scopedKey] <= 0
+		if shouldRemove {
+			delete(s.bucketRefs, scopedKey)
+		}
+		s.mu.Unlock()
+		if shouldRemove {
+			if err := s.store.RemoveBucket(context.Background(), ss.domain, key); err != nil {
+				s.logger.Error("failed to remove bucket on disconnect",
+					zap.String("domain", ss.domain),
+					zap.String("bucket_key", string(key)),
+					zap.Error(err))
+			}
 		}
 	}
 }
