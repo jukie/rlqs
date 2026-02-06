@@ -3,19 +3,28 @@ package server
 import (
 	"context"
 	"io"
+	"log/slog"
+	"net"
 	"sync"
+
+	"github.com/jukie/rlqs/internal/engine"
+	"github.com/jukie/rlqs/internal/quota"
+	"github.com/jukie/rlqs/internal/storage"
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
-
-	"github.com/jukie/rlqs/internal/quota"
-	"github.com/jukie/rlqs/internal/storage"
 )
 
-// RLQSServer implements the Rate Limit Quota Service.
+const serviceName = "envoy.service.rate_limit_quota.v3.RateLimitQuotaService"
+
+// === RLQSServer: full RLQS protocol implementation (rictus) ===
+
+// RLQSServer implements the Rate Limit Quota Service with full protocol support.
 type RLQSServer struct {
 	rlqspb.UnimplementedRateLimitQuotaServiceServer
 
@@ -37,8 +46,8 @@ type streamState struct {
 	subscriptions map[storage.BucketKey]struct{}
 }
 
-// New creates a new RLQSServer.
-func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine) *RLQSServer {
+// NewRLQS creates a new RLQSServer with full protocol support.
+func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine) *RLQSServer {
 	return &RLQSServer{
 		logger:  logger,
 		store:   store,
@@ -47,9 +56,9 @@ func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine) *RL
 	}
 }
 
-// Register adds the RLQS service to the gRPC server.
+// Register adds the RLQS service to the gRPC server using the full protocol implementation.
 func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, engine quota.Engine) {
-	rlqspb.RegisterRateLimitQuotaServiceServer(s, New(logger, store, engine))
+	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine))
 }
 
 // StreamRateLimitQuotas implements the bidirectional streaming RPC.
@@ -201,4 +210,76 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 				zap.Error(err))
 		}
 	}
+}
+
+// === Server: high-level wrapper with health checks (dementus) ===
+
+// Server wraps a gRPC server implementing the RLQS protocol with health checks.
+type Server struct {
+	grpcServer   *grpc.Server
+	healthServer *health.Server
+	eng          *engine.Engine
+	logger       *slog.Logger
+
+	rlqspb.UnimplementedRateLimitQuotaServiceServer
+}
+
+// New creates a new Server with health checks and the engine-based RLQS implementation.
+func New(eng *engine.Engine, logger *slog.Logger) *Server {
+	grpcSrv := grpc.NewServer()
+	healthSrv := health.NewServer()
+
+	s := &Server{
+		grpcServer:   grpcSrv,
+		healthServer: healthSrv,
+		eng:          eng,
+		logger:       logger,
+	}
+
+	rlqspb.RegisterRateLimitQuotaServiceServer(grpcSrv, s)
+	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
+
+	return s
+}
+
+// StreamRateLimitQuotas implements the bidirectional RLQS streaming RPC.
+func (s *Server) StreamRateLimitQuotas(stream rlqspb.RateLimitQuotaService_StreamRateLimitQuotasServer) error {
+	for {
+		report, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		s.logger.Info("received usage report",
+			"domain", report.GetDomain(),
+			"buckets", len(report.GetBucketQuotaUsages()),
+		)
+
+		resp := s.eng.ProcessReport(report)
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+}
+
+// Serve starts the gRPC server on the given listener.
+func (s *Server) Serve(lis net.Listener) error {
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	s.healthServer.SetServingStatus(serviceName, healthpb.HealthCheckResponse_SERVING)
+	return s.grpcServer.Serve(lis)
+}
+
+// GracefulStop drains connections and stops the server.
+func (s *Server) GracefulStop() {
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	s.healthServer.SetServingStatus(serviceName, healthpb.HealthCheckResponse_NOT_SERVING)
+	s.grpcServer.GracefulStop()
+}
+
+// GRPCServer returns the underlying grpc.Server (for testing).
+func (s *Server) GRPCServer() *grpc.Server {
+	return s.grpcServer
 }

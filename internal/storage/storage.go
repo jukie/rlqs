@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 )
@@ -38,4 +39,68 @@ type BucketStore interface {
 
 	// RemoveBucket deletes all state for the given domain and bucket.
 	RemoveBucket(ctx context.Context, domain string, key BucketKey) error
+}
+
+// UsageState tracks cumulative usage for a rate limit bucket.
+type UsageState struct {
+	Allowed uint64
+	Denied  uint64
+}
+
+// Storage provides thread-safe bucket state access.
+type Storage interface {
+	Get(key BucketKey) (UsageState, bool)
+	Update(key BucketKey, allowed, denied uint64)
+	Reset(key BucketKey)
+	All() map[BucketKey]UsageState
+}
+
+// MemoryStorage is an in-memory Storage implementation.
+type MemoryStorage struct {
+	mu      sync.RWMutex
+	buckets map[BucketKey]*UsageState
+}
+
+func NewMemoryStorage() *MemoryStorage {
+	return &MemoryStorage{
+		buckets: make(map[BucketKey]*UsageState),
+	}
+}
+
+func (s *MemoryStorage) Get(key BucketKey) (UsageState, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, ok := s.buckets[key]
+	if !ok {
+		return UsageState{}, false
+	}
+	return *state, true
+}
+
+func (s *MemoryStorage) Update(key BucketKey, allowed, denied uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.buckets[key]
+	if !ok {
+		s.buckets[key] = &UsageState{Allowed: allowed, Denied: denied}
+		return
+	}
+	state.Allowed += allowed
+	state.Denied += denied
+}
+
+func (s *MemoryStorage) Reset(key BucketKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.buckets, key)
+}
+
+func (s *MemoryStorage) All() map[BucketKey]UsageState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[BucketKey]UsageState, len(s.buckets))
+	for k, v := range s.buckets {
+		result[k] = *v
+	}
+	return result
 }

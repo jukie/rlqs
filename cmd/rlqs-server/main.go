@@ -1,56 +1,54 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"context"
+	"flag"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-
-	"github.com/jukie/rlqs/internal/quota"
+	"github.com/jukie/rlqs/internal/config"
+	"github.com/jukie/rlqs/internal/engine"
 	"github.com/jukie/rlqs/internal/server"
 	"github.com/jukie/rlqs/internal/storage"
 )
 
 func main() {
-	logger, err := zap.NewProduction()
+	configPath := flag.String("config", "", "path to config file")
+	flag.Parse()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("failed to create logger: %v", err)
-	}
-	defer logger.Sync()
-
-	port := os.Getenv("RLQS_PORT")
-	if port == "" {
-		port = "18080"
+		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	store := storage.NewMemoryStorage()
+	eng := engine.New(cfg.Engine, store)
+	srv := server.New(eng, logger)
+
+	lis, err := net.Listen("tcp", cfg.Server.GRPCAddr)
 	if err != nil {
-		logger.Fatal("failed to listen", zap.Error(err))
+		logger.Error("failed to listen", "addr", cfg.Server.GRPCAddr, "error", err)
+		os.Exit(1)
 	}
 
-	// TODO: replace with real implementations.
-	var store storage.BucketStore
-	var engine quota.Engine
-
-	grpcServer := grpc.NewServer()
-	server.Register(grpcServer, logger, store, engine)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	go func() {
-		sig := <-sigCh
-		logger.Info("received signal, shutting down", zap.String("signal", sig.String()))
-		grpcServer.GracefulStop()
+		logger.Info("starting rlqs server", "addr", lis.Addr().String())
+		if err := srv.Serve(lis); err != nil {
+			logger.Error("server error", "error", err)
+		}
 	}()
 
-	logger.Info("starting RLQS server", zap.String("addr", lis.Addr().String()))
-	if err := grpcServer.Serve(lis); err != nil {
-		logger.Fatal("failed to serve", zap.Error(err))
-	}
+	<-ctx.Done()
+	logger.Info("shutting down")
+	srv.GracefulStop()
+	logger.Info("server stopped")
 }
