@@ -8,7 +8,6 @@ import (
 	"github.com/jukie/rlqs/internal/storage"
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
-	typepb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 )
 
 func TestBucketKeyFromID(t *testing.T) {
@@ -65,15 +64,18 @@ func TestEngine_ProcessReport(t *testing.T) {
 		t.Fatal("expected quota assignment action")
 	}
 
-	rps := qa.GetRateLimitStrategy().GetRequestsPerTimeUnit()
-	if rps == nil {
-		t.Fatal("expected requests per time unit strategy")
+	tb := qa.GetRateLimitStrategy().GetTokenBucket()
+	if tb == nil {
+		t.Fatal("expected token bucket strategy")
 	}
-	if rps.GetRequestsPerTimeUnit() != 50 {
-		t.Fatalf("expected 50 rps, got %d", rps.GetRequestsPerTimeUnit())
+	if tb.GetMaxTokens() != 50 {
+		t.Fatalf("expected 50 max tokens, got %d", tb.GetMaxTokens())
 	}
-	if rps.GetTimeUnit() != typepb.RateLimitUnit_SECOND {
-		t.Fatalf("expected SECOND, got %v", rps.GetTimeUnit())
+	if tb.GetTokensPerFill().GetValue() != 50 {
+		t.Fatalf("expected 50 tokens per fill, got %d", tb.GetTokensPerFill().GetValue())
+	}
+	if tb.GetFillInterval().AsDuration() != 5*time.Second {
+		t.Fatalf("expected 5s fill interval, got %v", tb.GetFillInterval().AsDuration())
 	}
 
 	state, ok := store.Get(storage.BucketKeyFromProto(report.GetBucketQuotaUsages()[0].GetBucketId()))
