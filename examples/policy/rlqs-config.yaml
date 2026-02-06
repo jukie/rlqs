@@ -21,8 +21,21 @@ engine:
       rps: 5000
       assignment_ttl: "30s"
 
-    # Internal services get very high limits
+    # Internal services get very high limits (allow all)
     - domain_pattern: "^internal\\."
       bucket_key_pattern: ""
-      rps: 10000
+      strategy: "allow"
       assignment_ttl: "60s"
+
+    # Block known-bad domains entirely
+    - domain_pattern: "^blocked\\."
+      strategy: "deny"
+      assignment_ttl: "120s"
+      deny_response:
+        http_status: 403
+        http_body: '{"error": "access denied", "reason": "domain blocked"}'
+        grpc_status_code: 7
+        grpc_status_message: "domain blocked by policy"
+        response_headers_to_add:
+          X-RateLimit-Policy: "blocked"
+          Retry-After: "3600"

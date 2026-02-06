@@ -76,12 +76,43 @@ type EngineConfig struct {
 	Policies          []PolicyConfig `yaml:"policies"`
 }
 
+// DenyResponseConfig customizes the response returned when a request is denied.
+// These settings correspond to the Envoy RateLimitQuotaBucketSettings.DenyResponseSettings proto.
+type DenyResponseConfig struct {
+	// HTTPStatus is the HTTP status code to return for denied requests.
+	// Defaults to 429 (Too Many Requests). Only applies to HTTP (non-gRPC) requests.
+	HTTPStatus int `yaml:"http_status" json:"http_status,omitempty"`
+
+	// HTTPBody is the response body for denied HTTP requests.
+	// If empty, no body is returned.
+	HTTPBody string `yaml:"http_body" json:"http_body,omitempty"`
+
+	// GRPCStatusCode is the gRPC status code for denied gRPC requests.
+	// Uses google.rpc.Code values. Defaults to 14 (UNAVAILABLE).
+	GRPCStatusCode int `yaml:"grpc_status_code" json:"grpc_status_code,omitempty"`
+
+	// GRPCStatusMessage is the gRPC error message for denied gRPC requests.
+	GRPCStatusMessage string `yaml:"grpc_status_message" json:"grpc_status_message,omitempty"`
+
+	// ResponseHeadersToAdd specifies headers to add to deny responses.
+	ResponseHeadersToAdd map[string]string `yaml:"response_headers_to_add" json:"response_headers_to_add,omitempty"`
+}
+
 // PolicyConfig defines a rate limiting policy in YAML.
 type PolicyConfig struct {
 	DomainPattern    string   `yaml:"domain_pattern"`
 	BucketKeyPattern string   `yaml:"bucket_key_pattern"`
 	RPS              uint64   `yaml:"rps"`
 	AssignmentTTL    Duration `yaml:"assignment_ttl"`
+
+	// Strategy selects the rate limiting strategy type.
+	// Supported values: "token_bucket" (default), "deny", "allow".
+	// When "deny", a BlanketRule DENY_ALL is applied.
+	// When "allow", a BlanketRule ALLOW_ALL is applied.
+	Strategy string `yaml:"strategy"`
+
+	// DenyResponse customizes the response returned to clients when requests are denied.
+	DenyResponse *DenyResponseConfig `yaml:"deny_response" json:"deny_response,omitempty"`
 }
 
 func Load(path string) (*Config, error) {

@@ -7,6 +7,7 @@ import (
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/storage"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -253,4 +254,188 @@ func TestEngineProcessUsage(t *testing.T) {
 			t.Errorf("got %d actions, want 0", len(actions))
 		}
 	})
+}
+
+func TestEngineDenyAllStrategy(t *testing.T) {
+	denyStrategy := &typev3.RateLimitStrategy{
+		Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+			BlanketRule: typev3.RateLimitStrategy_DENY_ALL,
+		},
+	}
+
+	defaultStrategy := &typev3.RateLimitStrategy{
+		Strategy: &typev3.RateLimitStrategy_TokenBucket{
+			TokenBucket: &typev3.TokenBucket{
+				MaxTokens:     100,
+				TokensPerFill: wrapperspb.UInt32(100),
+				FillInterval:  durationpb.New(1 * time.Second),
+			},
+		},
+	}
+
+	engine := New(EngineConfig{
+		Policies: []Policy{
+			{
+				DomainPattern: "^blocked\\.",
+				Strategy:      denyStrategy,
+				AssignmentTTL: 30 * time.Second,
+			},
+		},
+		DefaultPolicy: Policy{
+			Strategy:      defaultStrategy,
+			AssignmentTTL: 10 * time.Second,
+		},
+	})
+
+	reports := []storage.UsageReport{
+		{
+			BucketId: &rlqspb.BucketId{
+				Bucket: map[string]string{"name": "test"},
+			},
+			NumRequestsAllowed: 10,
+		},
+	}
+
+	t.Run("applies DENY_ALL strategy", func(t *testing.T) {
+		actions, err := engine.ProcessUsage(context.Background(), "blocked.example.com", reports)
+		if err != nil {
+			t.Fatalf("ProcessUsage() error = %v", err)
+		}
+		if len(actions) != 1 {
+			t.Fatalf("got %d actions, want 1", len(actions))
+		}
+
+		action := actions[0].GetQuotaAssignmentAction()
+		if action == nil {
+			t.Fatal("expected QuotaAssignmentAction")
+		}
+
+		br := action.RateLimitStrategy.GetBlanketRule()
+		if br != typev3.RateLimitStrategy_DENY_ALL {
+			t.Errorf("got blanket rule %v, want DENY_ALL", br)
+		}
+	})
+
+	t.Run("non-blocked domain gets default", func(t *testing.T) {
+		actions, err := engine.ProcessUsage(context.Background(), "api.example.com", reports)
+		if err != nil {
+			t.Fatalf("ProcessUsage() error = %v", err)
+		}
+		if len(actions) != 1 {
+			t.Fatalf("got %d actions, want 1", len(actions))
+		}
+
+		action := actions[0].GetQuotaAssignmentAction()
+		if action == nil {
+			t.Fatal("expected QuotaAssignmentAction")
+		}
+
+		tb := action.RateLimitStrategy.GetTokenBucket()
+		if tb == nil {
+			t.Fatal("expected TokenBucket strategy for non-blocked domain")
+		}
+	})
+}
+
+func TestEngineAllowAllStrategy(t *testing.T) {
+	allowStrategy := &typev3.RateLimitStrategy{
+		Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+			BlanketRule: typev3.RateLimitStrategy_ALLOW_ALL,
+		},
+	}
+
+	defaultStrategy := &typev3.RateLimitStrategy{
+		Strategy: &typev3.RateLimitStrategy_TokenBucket{
+			TokenBucket: &typev3.TokenBucket{
+				MaxTokens:     100,
+				TokensPerFill: wrapperspb.UInt32(100),
+				FillInterval:  durationpb.New(1 * time.Second),
+			},
+		},
+	}
+
+	engine := New(EngineConfig{
+		Policies: []Policy{
+			{
+				DomainPattern: "^internal\\.",
+				Strategy:      allowStrategy,
+				AssignmentTTL: 60 * time.Second,
+			},
+		},
+		DefaultPolicy: Policy{
+			Strategy:      defaultStrategy,
+			AssignmentTTL: 10 * time.Second,
+		},
+	})
+
+	reports := []storage.UsageReport{
+		{
+			BucketId: &rlqspb.BucketId{
+				Bucket: map[string]string{"name": "test"},
+			},
+			NumRequestsAllowed: 10,
+		},
+	}
+
+	actions, err := engine.ProcessUsage(context.Background(), "internal.example.com", reports)
+	if err != nil {
+		t.Fatalf("ProcessUsage() error = %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("got %d actions, want 1", len(actions))
+	}
+
+	action := actions[0].GetQuotaAssignmentAction()
+	if action == nil {
+		t.Fatal("expected QuotaAssignmentAction")
+	}
+
+	br := action.RateLimitStrategy.GetBlanketRule()
+	if br != typev3.RateLimitStrategy_ALLOW_ALL {
+		t.Errorf("got blanket rule %v, want ALLOW_ALL", br)
+	}
+
+	if action.AssignmentTimeToLive.AsDuration() != 60*time.Second {
+		t.Errorf("got TTL = %v, want 60s", action.AssignmentTimeToLive.AsDuration())
+	}
+}
+
+func TestPolicyWithDenyResponse(t *testing.T) {
+	denyStrategy := &typev3.RateLimitStrategy{
+		Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+			BlanketRule: typev3.RateLimitStrategy_DENY_ALL,
+		},
+	}
+
+	p := Policy{
+		DomainPattern: "^blocked\\.",
+		Strategy:      denyStrategy,
+		AssignmentTTL: 30 * time.Second,
+		DenyResponse: &config.DenyResponseConfig{
+			HTTPStatus:        403,
+			HTTPBody:          `{"error": "forbidden"}`,
+			GRPCStatusCode:    7,
+			GRPCStatusMessage: "permission denied",
+			ResponseHeadersToAdd: map[string]string{
+				"X-Rate-Limit-Reason": "blocked",
+			},
+		},
+	}
+
+	// Verify deny response is carried through
+	if p.DenyResponse == nil {
+		t.Fatal("expected DenyResponse to be set")
+	}
+	if p.DenyResponse.HTTPStatus != 403 {
+		t.Errorf("got HTTPStatus = %d, want 403", p.DenyResponse.HTTPStatus)
+	}
+	if p.DenyResponse.HTTPBody != `{"error": "forbidden"}` {
+		t.Errorf("got HTTPBody = %q, want forbidden JSON", p.DenyResponse.HTTPBody)
+	}
+	if p.DenyResponse.GRPCStatusCode != 7 {
+		t.Errorf("got GRPCStatusCode = %d, want 7", p.DenyResponse.GRPCStatusCode)
+	}
+	if p.DenyResponse.ResponseHeadersToAdd["X-Rate-Limit-Reason"] != "blocked" {
+		t.Error("expected X-Rate-Limit-Reason header")
+	}
 }

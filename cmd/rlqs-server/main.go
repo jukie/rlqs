@@ -74,19 +74,14 @@ func buildEngine(cfg *config.Config) quota.Engine {
 			ttl = defaultTTL
 		}
 
+		strategy := buildStrategy(pc, cfg.Engine.ReportingInterval.Duration)
+
 		policies = append(policies, policy.Policy{
 			DomainPattern:    pc.DomainPattern,
 			BucketKeyPattern: pc.BucketKeyPattern,
-			Strategy: &typev3.RateLimitStrategy{
-				Strategy: &typev3.RateLimitStrategy_TokenBucket{
-					TokenBucket: &typev3.TokenBucket{
-						MaxTokens:     uint32(pc.RPS),
-						TokensPerFill: wrapperspb.UInt32(uint32(pc.RPS)),
-						FillInterval:  durationpb.New(cfg.Engine.ReportingInterval.Duration),
-					},
-				},
-			},
-			AssignmentTTL: ttl,
+			Strategy:         strategy,
+			AssignmentTTL:    ttl,
+			DenyResponse:     pc.DenyResponse,
 		})
 	}
 
@@ -97,6 +92,35 @@ func buildEngine(cfg *config.Config) quota.Engine {
 			AssignmentTTL: defaultTTL,
 		},
 	})
+}
+
+// buildStrategy creates a RateLimitStrategy from a PolicyConfig.
+// Supports "deny" (DENY_ALL), "allow" (ALLOW_ALL), and "token_bucket" (default).
+func buildStrategy(pc config.PolicyConfig, reportingInterval time.Duration) *typev3.RateLimitStrategy {
+	switch pc.Strategy {
+	case "deny":
+		return &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+				BlanketRule: typev3.RateLimitStrategy_DENY_ALL,
+			},
+		}
+	case "allow":
+		return &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_BlanketRule_{
+				BlanketRule: typev3.RateLimitStrategy_ALLOW_ALL,
+			},
+		}
+	default: // "token_bucket" or empty
+		return &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_TokenBucket{
+				TokenBucket: &typev3.TokenBucket{
+					MaxTokens:     uint32(pc.RPS),
+					TokensPerFill: wrapperspb.UInt32(uint32(pc.RPS)),
+					FillInterval:  durationpb.New(reportingInterval),
+				},
+			},
+		}
+	}
 }
 
 func main() {

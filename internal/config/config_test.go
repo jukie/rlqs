@@ -233,6 +233,91 @@ func TestLoadTracingEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadPolicyWithDenyResponse(t *testing.T) {
+	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	_, err = f.WriteString(`engine:
+  default_rps: 100
+  reporting_interval: "10s"
+  policies:
+    - domain_pattern: "^blocked\\."
+      strategy: "deny"
+      deny_response:
+        http_status: 403
+        http_body: '{"error": "forbidden"}'
+        grpc_status_code: 7
+        grpc_status_message: "permission denied"
+        response_headers_to_add:
+          X-Rate-Limit-Reason: "blocked"
+          Retry-After: "3600"
+    - domain_pattern: "^open\\."
+      strategy: "allow"
+    - domain_pattern: "^api\\."
+      rps: 500
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Engine.Policies) != 3 {
+		t.Fatalf("expected 3 policies, got %d", len(cfg.Engine.Policies))
+	}
+
+	// Deny policy
+	deny := cfg.Engine.Policies[0]
+	if deny.Strategy != "deny" {
+		t.Fatalf("expected strategy 'deny', got %q", deny.Strategy)
+	}
+	if deny.DenyResponse == nil {
+		t.Fatal("expected deny_response to be set")
+	}
+	if deny.DenyResponse.HTTPStatus != 403 {
+		t.Fatalf("expected http_status 403, got %d", deny.DenyResponse.HTTPStatus)
+	}
+	if deny.DenyResponse.HTTPBody != `{"error": "forbidden"}` {
+		t.Fatalf("unexpected http_body: %s", deny.DenyResponse.HTTPBody)
+	}
+	if deny.DenyResponse.GRPCStatusCode != 7 {
+		t.Fatalf("expected grpc_status_code 7, got %d", deny.DenyResponse.GRPCStatusCode)
+	}
+	if deny.DenyResponse.GRPCStatusMessage != "permission denied" {
+		t.Fatalf("expected grpc_status_message 'permission denied', got %q", deny.DenyResponse.GRPCStatusMessage)
+	}
+	if len(deny.DenyResponse.ResponseHeadersToAdd) != 2 {
+		t.Fatalf("expected 2 response headers, got %d", len(deny.DenyResponse.ResponseHeadersToAdd))
+	}
+	if deny.DenyResponse.ResponseHeadersToAdd["X-Rate-Limit-Reason"] != "blocked" {
+		t.Fatalf("unexpected header value: %s", deny.DenyResponse.ResponseHeadersToAdd["X-Rate-Limit-Reason"])
+	}
+
+	// Allow policy
+	allow := cfg.Engine.Policies[1]
+	if allow.Strategy != "allow" {
+		t.Fatalf("expected strategy 'allow', got %q", allow.Strategy)
+	}
+	if allow.DenyResponse != nil {
+		t.Fatal("expected no deny_response for allow policy")
+	}
+
+	// Token bucket policy (default strategy)
+	tb := cfg.Engine.Policies[2]
+	if tb.Strategy != "" {
+		t.Fatalf("expected empty strategy (default), got %q", tb.Strategy)
+	}
+	if tb.RPS != 500 {
+		t.Fatalf("expected rps 500, got %d", tb.RPS)
+	}
+}
+
 func TestLoadEnvOverridesYAML(t *testing.T) {
 	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
 	if err != nil {

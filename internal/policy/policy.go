@@ -7,6 +7,7 @@ import (
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/storage"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -27,6 +28,9 @@ type Policy struct {
 
 	// AssignmentTTL is the TTL sent to clients with each quota assignment.
 	AssignmentTTL time.Duration
+
+	// DenyResponse holds optional deny response customization for this policy.
+	DenyResponse *config.DenyResponseConfig
 
 	// compiled regex patterns (cached after first use)
 	domainRegex    *regexp.Regexp
