@@ -181,6 +181,58 @@ func TestLoadTLSEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadTracingYAML(t *testing.T) {
+	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	_, err = f.WriteString(`tracing:
+  enabled: true
+  endpoint: "otel-collector:4317"
+  insecure: true
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Tracing.Enabled {
+		t.Fatal("expected tracing enabled")
+	}
+	if cfg.Tracing.Endpoint != "otel-collector:4317" {
+		t.Fatalf("expected otel-collector:4317, got %s", cfg.Tracing.Endpoint)
+	}
+	if !cfg.Tracing.Insecure {
+		t.Fatal("expected tracing insecure")
+	}
+}
+
+func TestLoadTracingEnvOverrides(t *testing.T) {
+	t.Setenv("RLQS_TRACING_ENABLED", "true")
+	t.Setenv("RLQS_TRACING_ENDPOINT", "localhost:4317")
+	t.Setenv("RLQS_TRACING_INSECURE", "1")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Tracing.Enabled {
+		t.Fatal("expected tracing enabled via env")
+	}
+	if cfg.Tracing.Endpoint != "localhost:4317" {
+		t.Fatalf("expected localhost:4317, got %s", cfg.Tracing.Endpoint)
+	}
+	if !cfg.Tracing.Insecure {
+		t.Fatal("expected tracing insecure via env")
+	}
+}
+
 func TestLoadEnvOverridesYAML(t *testing.T) {
 	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
 	if err != nil {

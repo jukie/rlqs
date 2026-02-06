@@ -15,6 +15,7 @@ import (
 	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/server"
 	"github.com/jukie/rlqs/internal/storage"
+	"github.com/jukie/rlqs/internal/tracing"
 
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -111,6 +112,19 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Fatal("failed to load config", zap.Error(err))
+	}
+
+	shutdownTracing, err := tracing.Init(context.Background(), cfg.Tracing)
+	if err != nil {
+		logger.Fatal("failed to initialize tracing", zap.Error(err))
+	}
+	defer func() {
+		if err := shutdownTracing(context.Background()); err != nil {
+			logger.Error("tracing shutdown error", zap.Error(err))
+		}
+	}()
+	if cfg.Tracing.Enabled {
+		logger.Info("tracing enabled", zap.String("endpoint", cfg.Tracing.Endpoint))
 	}
 
 	store := buildStore(cfg, logger)

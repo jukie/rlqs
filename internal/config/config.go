@@ -12,6 +12,13 @@ type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	Engine  EngineConfig  `yaml:"engine"`
 	Storage StorageConfig `yaml:"storage"`
+	Tracing TracingConfig `yaml:"tracing"`
+}
+
+type TracingConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Endpoint string `yaml:"endpoint"` // OTLP gRPC endpoint (e.g. "localhost:4317")
+	Insecure bool   `yaml:"insecure"` // Use insecure connection to collector
 }
 
 type StorageConfig struct {
@@ -140,6 +147,15 @@ func Load(path string) (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Storage.Redis.PoolSize = n
 		}
+	}
+	if v := os.Getenv("RLQS_TRACING_ENABLED"); v != "" {
+		cfg.Tracing.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("RLQS_TRACING_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = v
+	}
+	if v := os.Getenv("RLQS_TRACING_INSECURE"); v != "" {
+		cfg.Tracing.Insecure = v == "true" || v == "1"
 	}
 
 	return cfg, nil

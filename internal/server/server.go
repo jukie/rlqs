@@ -19,6 +19,7 @@ import (
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -321,6 +322,7 @@ func DefaultServerOptions(logger *zap.Logger, cfg config.ServerConfig) []grpc.Se
 			MinTime:             30 * time.Second,
 			PermitWithoutStream: true,
 		}),
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainStreamInterceptor(
 			grpc_prometheus.StreamServerInterceptor,
 			loggingStreamInterceptor(logger),
