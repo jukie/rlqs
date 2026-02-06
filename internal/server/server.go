@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jukie/rlqs/internal/admin"
 	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/metrics"
 	"github.com/jukie/rlqs/internal/quota"
@@ -292,6 +293,20 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 	}
 }
 
+// StreamStats returns information about all active streams.
+func (s *RLQSServer) StreamStats() []admin.StreamInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := make([]admin.StreamInfo, 0, len(s.streams))
+	for ss := range s.streams {
+		stats = append(stats, admin.StreamInfo{
+			Domain:            ss.domain,
+			SubscriptionCount: len(ss.subscriptions),
+		})
+	}
+	return stats
+}
+
 // DefaultServerOptions returns the standard set of server options with recovery, logging, Prometheus metrics,
 // keepalive, and concurrency limits derived from the server config.
 func DefaultServerOptions(logger *zap.Logger, cfg config.ServerConfig) []grpc.ServerOption {
@@ -323,14 +338,16 @@ func DefaultServerOptions(logger *zap.Logger, cfg config.ServerConfig) []grpc.Se
 type Server struct {
 	grpcServer   *grpc.Server
 	healthServer *health.Server
+	rlqsServer   *RLQSServer
 }
 
 // New creates a Server that uses the full-protocol RLQSServer with health checks.
 func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig, opts ...grpc.ServerOption) *Server {
 	grpcSrv := grpc.NewServer(opts...)
 	healthSrv := health.NewServer()
+	rlqsSrv := NewRLQS(logger, store, engine, cfg.MaxBucketsPerStream, cfg.EngineTimeout.Duration)
 
-	Register(grpcSrv, logger, store, engine, cfg.MaxBucketsPerStream, cfg.EngineTimeout.Duration)
+	rlqspb.RegisterRateLimitQuotaServiceServer(grpcSrv, rlqsSrv)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
 
 	// Initialize gRPC Prometheus metrics.
@@ -339,7 +356,13 @@ func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg
 	return &Server{
 		grpcServer:   grpcSrv,
 		healthServer: healthSrv,
+		rlqsServer:   rlqsSrv,
 	}
+}
+
+// StreamStats returns information about all active streams.
+func (s *Server) StreamStats() []admin.StreamInfo {
+	return s.rlqsServer.StreamStats()
 }
 
 // Serve starts the gRPC server on the given listener.

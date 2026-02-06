@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jukie/rlqs/internal/admin"
 	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/policy"
 	"github.com/jukie/rlqs/internal/quota"
@@ -134,10 +135,16 @@ func main() {
 		logger.Fatal("failed to listen", zap.String("addr", cfg.Server.GRPCAddr), zap.Error(err))
 	}
 
-	// Start metrics HTTP server.
+	// Start HTTP server with metrics and admin endpoints.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+
+	adminHandler := admin.New(srv.StreamStats, store, cfg)
+	adminHandler.Register(mux)
+
 	metricsServer := &http.Server{
 		Addr:    cfg.Server.MetricsAddr,
-		Handler: promhttp.Handler(),
+		Handler: mux,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
