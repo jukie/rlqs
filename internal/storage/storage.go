@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 )
@@ -13,16 +14,28 @@ import (
 type BucketKey string
 
 // BucketKeyFromProto produces a canonical, order-independent key from a BucketId proto.
+// Keys are sorted lexicographically and joined with null-byte separators to avoid
+// collisions with real data. Format: "key1\x00val1\x1ekey2\x00val2"
 func BucketKeyFromProto(id *rlqspb.BucketId) BucketKey {
-	if id == nil {
+	if id == nil || len(id.GetBucket()) == 0 {
 		return ""
 	}
-	pairs := make([]string, 0, len(id.GetBucket()))
-	for k, v := range id.GetBucket() {
-		pairs = append(pairs, k+"="+v)
+	keys := make([]string, 0, len(id.GetBucket()))
+	for k := range id.GetBucket() {
+		keys = append(keys, k)
 	}
-	sort.Strings(pairs)
-	return BucketKey(strings.Join(pairs, "\x00"))
+	sort.Strings(keys)
+
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('\x1e') // record separator between pairs
+		}
+		sb.WriteString(k)
+		sb.WriteByte('\x00') // null between key and value
+		sb.WriteString(id.GetBucket()[k])
+	}
+	return BucketKey(sb.String())
 }
 
 // UsageReport captures a single bucket's usage data from a client report.
@@ -30,6 +43,9 @@ type UsageReport struct {
 	BucketId           *rlqspb.BucketId
 	NumRequestsAllowed uint64
 	NumRequestsDenied  uint64
+	// TimeElapsed is the duration since the last report for this bucket.
+	// Per the RLQS spec this is a required field on BucketQuotaUsage.
+	TimeElapsed time.Duration
 }
 
 // BucketStore persists and retrieves per-bucket quota state.
@@ -103,4 +119,17 @@ func (s *MemoryStorage) All() map[BucketKey]UsageState {
 		result[k] = *v
 	}
 	return result
+}
+
+// RecordUsage implements BucketStore by accumulating usage into the in-memory store.
+func (s *MemoryStorage) RecordUsage(_ context.Context, _ string, report UsageReport) error {
+	key := BucketKeyFromProto(report.BucketId)
+	s.Update(key, report.NumRequestsAllowed, report.NumRequestsDenied)
+	return nil
+}
+
+// RemoveBucket implements BucketStore by removing the bucket from the in-memory store.
+func (s *MemoryStorage) RemoveBucket(_ context.Context, _ string, key BucketKey) error {
+	s.Reset(key)
+	return nil
 }

@@ -2,18 +2,17 @@ package rlqs_test
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/jukie/rlqs/internal/config"
-	"github.com/jukie/rlqs/internal/engine"
+	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/server"
 	"github.com/jukie/rlqs/internal/storage"
 
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
+	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -23,12 +22,21 @@ func setupServer(t *testing.T, rps uint64) (*server.Server, *storage.MemoryStora
 	t.Helper()
 
 	store := storage.NewMemoryStorage()
-	eng := engine.New(config.EngineConfig{
-		DefaultRPS:        rps,
-		ReportingInterval: config.Duration{Duration: 5 * time.Second},
-	}, store)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(eng, logger)
+	logger := zaptest.NewLogger(t)
+
+	eng := quota.NewDefaultEngine(quota.DefaultEngineConfig{
+		DefaultStrategy: &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_RequestsPerTimeUnit_{
+				RequestsPerTimeUnit: &typev3.RateLimitStrategy_RequestsPerTimeUnit{
+					RequestsPerTimeUnit: rps,
+					TimeUnit:            typev3.RateLimitUnit_SECOND,
+				},
+			},
+		},
+		AssignmentTTL: 10 * time.Second,
+	})
+
+	srv := server.New(logger, store, eng)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -71,13 +79,12 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 	}
 
 	// Send first report
+	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web-api"}}
 	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
 		Domain: "test",
 		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
 			{
-				BucketId: &rlqspb.BucketId{
-					Bucket: map[string]string{"name": "web-api"},
-				},
+				BucketId:           bid,
 				NumRequestsAllowed: 42,
 				NumRequestsDenied:  3,
 			},
@@ -110,7 +117,7 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 	}
 
 	// Verify storage accumulated the report
-	key := engine.BucketKeyFromID(action.GetBucketId())
+	key := storage.BucketKeyFromProto(bid)
 	state, ok := store.Get(key)
 	if !ok {
 		t.Fatal("bucket not in storage")
@@ -124,9 +131,7 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 		Domain: "test",
 		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
 			{
-				BucketId: &rlqspb.BucketId{
-					Bucket: map[string]string{"name": "web-api"},
-				},
+				BucketId:           bid,
 				NumRequestsAllowed: 8,
 				NumRequestsDenied:  0,
 			},
@@ -193,14 +198,82 @@ func TestIntegration_MultipleBucketsOneStream(t *testing.T) {
 	}
 }
 
+func TestIntegration_DomainBinding(t *testing.T) {
+	_, _, addr := setupServer(t, 100)
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First message binds to "test" domain.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain: "test",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
+			{
+				BucketId:           &rlqspb.BucketId{Bucket: map[string]string{"name": "b1"}},
+				NumRequestsAllowed: 10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the assignment response.
+	_, err = stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second message with different domain should cause error.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain: "other-domain",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
+			{
+				BucketId:           &rlqspb.BucketId{Bucket: map[string]string{"name": "b2"}},
+				NumRequestsAllowed: 5,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should receive an error on next recv.
+	_, err = stream.Recv()
+	if err == nil {
+		t.Fatal("expected error for domain mismatch")
+	}
+}
+
 func TestIntegration_GracefulShutdown(t *testing.T) {
 	store := storage.NewMemoryStorage()
-	eng := engine.New(config.EngineConfig{
-		DefaultRPS:        100,
-		ReportingInterval: config.Duration{Duration: 10 * time.Second},
-	}, store)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := server.New(eng, logger)
+	logger := zaptest.NewLogger(t)
+
+	eng := quota.NewDefaultEngine(quota.DefaultEngineConfig{
+		DefaultStrategy: &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_RequestsPerTimeUnit_{
+				RequestsPerTimeUnit: &typev3.RateLimitStrategy_RequestsPerTimeUnit{
+					RequestsPerTimeUnit: 100,
+					TimeUnit:            typev3.RateLimitUnit_SECOND,
+				},
+			},
+		},
+		AssignmentTTL: 20 * time.Second,
+	})
+
+	srv := server.New(logger, store, eng)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

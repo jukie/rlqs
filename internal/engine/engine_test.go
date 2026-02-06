@@ -18,8 +18,9 @@ func TestBucketKeyFromID(t *testing.T) {
 		expected storage.BucketKey
 	}{
 		{"nil", nil, ""},
-		{"single", &rlqspb.BucketId{Bucket: map[string]string{"a": "1"}}, "a=1"},
-		{"sorted", &rlqspb.BucketId{Bucket: map[string]string{"b": "2", "a": "1"}}, "a=1;b=2"},
+		{"empty", &rlqspb.BucketId{Bucket: map[string]string{}}, ""},
+		{"single", &rlqspb.BucketId{Bucket: map[string]string{"a": "1"}}, storage.BucketKey("a\x001")},
+		{"sorted", &rlqspb.BucketId{Bucket: map[string]string{"b": "2", "a": "1"}}, storage.BucketKey("a\x001\x1eb\x002")},
 	}
 
 	for _, tt := range tests {
@@ -75,7 +76,7 @@ func TestEngine_ProcessReport(t *testing.T) {
 		t.Fatalf("expected SECOND, got %v", rps.GetTimeUnit())
 	}
 
-	state, ok := store.Get("name=b1")
+	state, ok := store.Get(storage.BucketKeyFromProto(report.GetBucketQuotaUsages()[0].GetBucketId()))
 	if !ok {
 		t.Fatal("bucket not found in storage")
 	}

@@ -65,11 +65,18 @@ func TestCanonicalize_DifferentKeys(t *testing.T) {
 }
 
 func TestCanonicalize_NoAmbiguity(t *testing.T) {
-	// "a"="b\nc" must differ from "a"="b","c"="" to avoid collisions.
-	a := CanonicalizeBucketId(bucketId("a", "b\nc"))
+	// Keys with embedded separator characters must not collide.
+	// "a"="b\x1ec" must differ from "a"="b","c"="" to avoid collisions.
+	a := CanonicalizeBucketId(bucketId("a", "b\x1ec"))
 	b := CanonicalizeBucketId(bucketId("a", "b", "c", ""))
 	if a == b {
-		t.Fatal("ambiguous canonicalization: newline in value collides with separator")
+		t.Fatal("ambiguous canonicalization: embedded separator in value collides with pair separator")
+	}
+	// "a\x00b"="" must differ from "a"="b".
+	c := CanonicalizeBucketId(bucketId("a\x00b", ""))
+	d := CanonicalizeBucketId(bucketId("a", "b"))
+	if c == d {
+		t.Fatal("ambiguous canonicalization: null in key collides with key/value separator")
 	}
 }
 

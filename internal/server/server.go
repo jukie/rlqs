@@ -3,11 +3,9 @@ package server
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"sync"
 
-	"github.com/jukie/rlqs/internal/engine"
 	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/storage"
 
@@ -126,7 +124,7 @@ func (s *RLQSServer) handleMessage(
 	// Build reports and track subscriptions.
 	reports := make([]storage.UsageReport, 0, len(usages))
 	for _, u := range usages {
-		if u.GetBucketId() == nil {
+		if u.GetBucketId() == nil || len(u.GetBucketId().GetBucket()) == 0 {
 			continue
 		}
 		key := storage.BucketKeyFromProto(u.GetBucketId())
@@ -143,6 +141,7 @@ func (s *RLQSServer) handleMessage(
 			BucketId:           u.GetBucketId(),
 			NumRequestsAllowed: u.GetNumRequestsAllowed(),
 			NumRequestsDenied:  u.GetNumRequestsDenied(),
+			TimeElapsed:        u.GetTimeElapsed().AsDuration(),
 		}
 
 		if err := s.store.RecordUsage(ctx, ss.domain, report); err != nil {
@@ -212,56 +211,25 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 	}
 }
 
-// === Server: high-level wrapper with health checks (dementus) ===
+// === Server: high-level wrapper with health checks ===
 
-// Server wraps a gRPC server implementing the RLQS protocol with health checks.
+// Server wraps an RLQSServer with health checks and lifecycle management.
 type Server struct {
 	grpcServer   *grpc.Server
 	healthServer *health.Server
-	eng          *engine.Engine
-	logger       *slog.Logger
-
-	rlqspb.UnimplementedRateLimitQuotaServiceServer
 }
 
-// New creates a new Server with health checks and the engine-based RLQS implementation.
-func New(eng *engine.Engine, logger *slog.Logger) *Server {
+// New creates a Server that uses the full-protocol RLQSServer with health checks.
+func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine) *Server {
 	grpcSrv := grpc.NewServer()
 	healthSrv := health.NewServer()
 
-	s := &Server{
-		grpcServer:   grpcSrv,
-		healthServer: healthSrv,
-		eng:          eng,
-		logger:       logger,
-	}
-
-	rlqspb.RegisterRateLimitQuotaServiceServer(grpcSrv, s)
+	Register(grpcSrv, logger, store, engine)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
 
-	return s
-}
-
-// StreamRateLimitQuotas implements the bidirectional RLQS streaming RPC.
-func (s *Server) StreamRateLimitQuotas(stream rlqspb.RateLimitQuotaService_StreamRateLimitQuotasServer) error {
-	for {
-		report, err := stream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		s.logger.Info("received usage report",
-			"domain", report.GetDomain(),
-			"buckets", len(report.GetBucketQuotaUsages()),
-		)
-
-		resp := s.eng.ProcessReport(report)
-		if err := stream.Send(resp); err != nil {
-			return err
-		}
+	return &Server{
+		grpcServer:   grpcSrv,
+		healthServer: healthSrv,
 	}
 }
 

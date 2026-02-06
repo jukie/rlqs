@@ -1,9 +1,6 @@
 package storage
 
 import (
-	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,25 +12,10 @@ import (
 type CanonicalBucketKey string
 
 // CanonicalizeBucketId produces a deterministic string key from a BucketId by
-// sorting the map keys lexicographically.
+// sorting the map keys lexicographically. Uses the same format as BucketKeyFromProto:
+// "key1\x00val1\x1ekey2\x00val2" (null between key/value, record separator between pairs).
 func CanonicalizeBucketId(id *rlqspb.BucketId) CanonicalBucketKey {
-	if id == nil || len(id.Bucket) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(id.Bucket))
-	for k := range id.Bucket {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(&b, "%s\x00%s", k, id.Bucket[k])
-	}
-	return CanonicalBucketKey(b.String())
+	return CanonicalBucketKey(BucketKeyFromProto(id))
 }
 
 // BucketState holds the runtime state for a single rate-limit bucket.

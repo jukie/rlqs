@@ -466,3 +466,93 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestAssignSameStrategyExtendsTTL(t *testing.T) {
+	clk := newFakeClock(time.Now())
+	e := NewWithClock(Config{AssignmentTTL: 10 * time.Second}, clk)
+
+	// Assign a token bucket with 5 tokens.
+	e.Assign("b1", tokenBucket(5, 1, time.Second))
+
+	// Consume 3 tokens.
+	for i := 0; i < 3; i++ {
+		ok, err := e.Allow("b1")
+		require.NoError(t, err)
+		assert.True(t, ok)
+	}
+
+	// Advance 8 seconds (within TTL of 10s).
+	clk.Advance(8 * time.Second)
+
+	// Re-assign the same strategy — should extend TTL without resetting tokens.
+	e.Assign("b1", tokenBucket(5, 1, time.Second))
+
+	// Advance another 5 seconds (13s total from original, but only 5s from re-assign).
+	clk.Advance(5 * time.Second)
+
+	// Should still be active since TTL was extended.
+	b := e.Get("b1")
+	assert.NotNil(t, b, "bucket should still be active after TTL extension")
+
+	// Tokens should NOT have been reset — we consumed 3, then refilled during time advancement.
+	// After re-assign at t=8s, tokens were not reset (had ~2 + 8 refills = 10, capped at 5).
+	// After 5 more seconds, still have refilled tokens. Check we can still allow.
+	ok, err := e.Allow("b1")
+	require.NoError(t, err)
+	assert.True(t, ok, "should have tokens from refill, not from reset")
+}
+
+func TestAssignDifferentStrategyResetsState(t *testing.T) {
+	clk := newFakeClock(time.Now())
+	e := NewWithClock(Config{}, clk)
+
+	// Assign token bucket with 5 tokens.
+	e.Assign("b1", tokenBucket(5, 1, time.Second))
+
+	// Consume all 5 tokens.
+	for i := 0; i < 5; i++ {
+		ok, err := e.Allow("b1")
+		require.NoError(t, err)
+		assert.True(t, ok)
+	}
+	ok, err := e.Allow("b1")
+	require.NoError(t, err)
+	assert.False(t, ok, "should be out of tokens")
+
+	// Assign a DIFFERENT strategy (token bucket with different max).
+	e.Assign("b1", tokenBucket(10, 1, time.Second))
+
+	// Should have fresh 10 tokens since strategy changed.
+	for i := 0; i < 10; i++ {
+		ok, err := e.Allow("b1")
+		require.NoError(t, err)
+		assert.True(t, ok, "token %d should be available after strategy change", i+1)
+	}
+}
+
+func TestStrategiesEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b *typev3.RateLimitStrategy
+		want bool
+	}{
+		{"nil_nil", nil, nil, true},
+		{"nil_nonnull", nil, blanketRule(typev3.RateLimitStrategy_ALLOW_ALL), false},
+		{"blanket_same", blanketRule(typev3.RateLimitStrategy_ALLOW_ALL), blanketRule(typev3.RateLimitStrategy_ALLOW_ALL), true},
+		{"blanket_diff", blanketRule(typev3.RateLimitStrategy_ALLOW_ALL), blanketRule(typev3.RateLimitStrategy_DENY_ALL), false},
+		{"rptu_same", requestsPerTimeUnit(100, typev3.RateLimitUnit_SECOND), requestsPerTimeUnit(100, typev3.RateLimitUnit_SECOND), true},
+		{"rptu_diff_rate", requestsPerTimeUnit(100, typev3.RateLimitUnit_SECOND), requestsPerTimeUnit(200, typev3.RateLimitUnit_SECOND), false},
+		{"rptu_diff_unit", requestsPerTimeUnit(100, typev3.RateLimitUnit_SECOND), requestsPerTimeUnit(100, typev3.RateLimitUnit_MINUTE), false},
+		{"tb_same", tokenBucket(10, 2, time.Second), tokenBucket(10, 2, time.Second), true},
+		{"tb_diff_max", tokenBucket(10, 2, time.Second), tokenBucket(20, 2, time.Second), false},
+		{"tb_diff_fill", tokenBucket(10, 2, time.Second), tokenBucket(10, 5, time.Second), false},
+		{"cross_type", blanketRule(typev3.RateLimitStrategy_ALLOW_ALL), requestsPerTimeUnit(100, typev3.RateLimitUnit_SECOND), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := strategiesEqual(tt.a, tt.b)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

@@ -1,10 +1,6 @@
 package engine
 
 import (
-	"fmt"
-	"sort"
-	"strings"
-
 	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/storage"
 
@@ -24,24 +20,9 @@ func New(cfg config.EngineConfig, store storage.Storage) *Engine {
 }
 
 // BucketKeyFromID produces a stable string key from a BucketId.
+// Delegates to storage.BucketKeyFromProto for a single canonical format.
 func BucketKeyFromID(id *rlqspb.BucketId) storage.BucketKey {
-	if id == nil {
-		return ""
-	}
-	keys := make([]string, 0, len(id.GetBucket()))
-	for k := range id.GetBucket() {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var sb strings.Builder
-	for i, k := range keys {
-		if i > 0 {
-			sb.WriteByte(';')
-		}
-		fmt.Fprintf(&sb, "%s=%s", k, id.GetBucket()[k])
-	}
-	return storage.BucketKey(sb.String())
+	return storage.BucketKeyFromProto(id)
 }
 
 // ProcessReport processes a usage report and returns quota assignments.

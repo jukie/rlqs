@@ -70,11 +70,23 @@ func NewWithClock(cfg Config, clock Clock) *QuotaEngine {
 }
 
 // Assign sets or replaces the quota strategy for a bucket.
+// Per the RLQS spec, when an identical strategy is reassigned, the assignment
+// duration is extended without resetting the rate limiting state (tokens, windows).
 func (e *QuotaEngine) Assign(bucketID string, strategy *typev3.RateLimitStrategy) *Bucket {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	now := e.clock.Now()
+
+	// If the bucket already exists with the same strategy type, extend TTL
+	// without resetting rate-limit state (tokens, window counters).
+	if existing, ok := e.buckets[bucketID]; ok && strategiesEqual(existing.Strategy, strategy) {
+		existing.AssignedAt = now
+		existing.LastActivity = now
+		existing.Strategy = strategy // update in case fields changed slightly
+		return existing
+	}
+
 	b := &Bucket{
 		Strategy:     strategy,
 		AssignedAt:   now,
@@ -89,6 +101,43 @@ func (e *QuotaEngine) Assign(bucketID string, strategy *typev3.RateLimitStrategy
 
 	e.buckets[bucketID] = b
 	return b
+}
+
+// strategiesEqual returns true if two strategies are of the same type with the
+// same parameters, meaning a reassignment should extend TTL rather than reset state.
+func strategiesEqual(a, b *typev3.RateLimitStrategy) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Strategy == nil || b.Strategy == nil {
+		return a.Strategy == nil && b.Strategy == nil
+	}
+
+	switch sa := a.Strategy.(type) {
+	case *typev3.RateLimitStrategy_BlanketRule_:
+		sb, ok := b.Strategy.(*typev3.RateLimitStrategy_BlanketRule_)
+		return ok && sa.BlanketRule == sb.BlanketRule
+
+	case *typev3.RateLimitStrategy_RequestsPerTimeUnit_:
+		sb, ok := b.Strategy.(*typev3.RateLimitStrategy_RequestsPerTimeUnit_)
+		if !ok {
+			return false
+		}
+		return sa.RequestsPerTimeUnit.GetRequestsPerTimeUnit() == sb.RequestsPerTimeUnit.GetRequestsPerTimeUnit() &&
+			sa.RequestsPerTimeUnit.GetTimeUnit() == sb.RequestsPerTimeUnit.GetTimeUnit()
+
+	case *typev3.RateLimitStrategy_TokenBucket:
+		sb, ok := b.Strategy.(*typev3.RateLimitStrategy_TokenBucket)
+		if !ok {
+			return false
+		}
+		return sa.TokenBucket.GetMaxTokens() == sb.TokenBucket.GetMaxTokens() &&
+			sa.TokenBucket.GetTokensPerFill().GetValue() == sb.TokenBucket.GetTokensPerFill().GetValue() &&
+			sa.TokenBucket.GetFillInterval().AsDuration() == sb.TokenBucket.GetFillInterval().AsDuration()
+
+	default:
+		return false
+	}
 }
 
 // Get returns the bucket if it exists and is still valid.

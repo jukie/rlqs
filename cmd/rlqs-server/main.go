@@ -3,52 +3,73 @@ package main
 import (
 	"context"
 	"flag"
-	"log/slog"
 	"net"
-	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jukie/rlqs/internal/config"
-	"github.com/jukie/rlqs/internal/engine"
+	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/server"
 	"github.com/jukie/rlqs/internal/storage"
+
+	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"go.uber.org/zap"
 )
 
 func main() {
 	configPath := flag.String("config", "", "path to config file")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer logger.Sync()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
-		os.Exit(1)
+		logger.Fatal("failed to load config", zap.Error(err))
 	}
 
 	store := storage.NewMemoryStorage()
-	eng := engine.New(cfg.Engine, store)
-	srv := server.New(eng, logger)
+	eng := quota.NewDefaultEngine(quota.DefaultEngineConfig{
+		DefaultStrategy: &typev3.RateLimitStrategy{
+			Strategy: &typev3.RateLimitStrategy_RequestsPerTimeUnit_{
+				RequestsPerTimeUnit: &typev3.RateLimitStrategy_RequestsPerTimeUnit{
+					RequestsPerTimeUnit: cfg.Engine.DefaultRPS,
+					TimeUnit:            typev3.RateLimitUnit_SECOND,
+				},
+			},
+		},
+		AssignmentTTL: cfg.Engine.ReportingInterval.Duration * 2,
+	})
+
+	srv := server.New(logger, store, eng)
 
 	lis, err := net.Listen("tcp", cfg.Server.GRPCAddr)
 	if err != nil {
-		logger.Error("failed to listen", "addr", cfg.Server.GRPCAddr, "error", err)
-		os.Exit(1)
+		logger.Fatal("failed to listen", zap.String("addr", cfg.Server.GRPCAddr), zap.Error(err))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		logger.Info("starting rlqs server", "addr", lis.Addr().String())
+		logger.Info("starting rlqs server", zap.String("addr", lis.Addr().String()))
 		if err := srv.Serve(lis); err != nil {
-			logger.Error("server error", "error", err)
+			logger.Error("server error", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
 	logger.Info("shutting down")
+
+	// Give active streams time to drain.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	_ = shutdownCtx
+
 	srv.GracefulStop()
 	logger.Info("server stopped")
 }
