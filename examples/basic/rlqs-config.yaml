@@ -1,0 +1,9 @@
+server:
+  grpc_addr: ":18081"
+
+engine:
+  # Every bucket gets this rate limit until you implement per-bucket logic.
+  default_rps: 100
+
+  # Should match or exceed the reporting_interval configured in envoy.yaml.
+  reporting_interval: "10s"
