@@ -148,3 +148,17 @@ func (s *MemoryStorage) RemoveBucket(_ context.Context, domain string, key Bucke
 	s.Reset(scopedKey)
 	return nil
 }
+
+// Len returns the number of buckets in the store.
+func (s *MemoryStorage) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.buckets)
+}
+
+// Clear removes all entries from the store.
+func (s *MemoryStorage) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buckets = make(map[BucketKey]*UsageState)
+}

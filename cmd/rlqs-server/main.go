@@ -37,6 +37,7 @@ func buildStore(cfg *config.Config, logger *zap.Logger) storage.BucketStore {
 			Addr:     cfg.Storage.Redis.Addr,
 			PoolSize: cfg.Storage.Redis.PoolSize,
 			KeyTTL:   cfg.Engine.ReportingInterval.Duration * 6,
+			Logger:   logger,
 		})
 	default:
 		logger.Info("using in-memory storage backend")
