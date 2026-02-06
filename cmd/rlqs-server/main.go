@@ -46,7 +46,7 @@ func buildStore(cfg *config.Config, logger *zap.Logger) storage.BucketStore {
 
 // buildEngine creates a quota engine from the configuration.
 // If policies are defined, returns an Engine; otherwise returns DefaultEngine.
-func buildEngine(cfg *config.Config) quota.Engine {
+func buildEngine(cfg *config.Config) (quota.Engine, error) {
 	defaultStrategy := &typev3.RateLimitStrategy{
 		Strategy: &typev3.RateLimitStrategy_TokenBucket{
 			TokenBucket: &typev3.TokenBucket{
@@ -63,7 +63,7 @@ func buildEngine(cfg *config.Config) quota.Engine {
 		return quota.NewDefaultEngine(quota.DefaultEngineConfig{
 			DefaultStrategy: defaultStrategy,
 			AssignmentTTL:   defaultTTL,
-		})
+		}), nil
 	}
 
 	// Build Engine from config
@@ -152,7 +152,10 @@ func main() {
 	}
 
 	store := buildStore(cfg, logger)
-	eng := buildEngine(cfg)
+	eng, err := buildEngine(cfg)
+	if err != nil {
+		logger.Fatal("failed to build quota engine", zap.Error(err))
+	}
 
 	opts := server.DefaultServerOptions(logger, cfg.Server)
 	if cfg.Server.TLS.CertFile != "" {
@@ -211,7 +214,11 @@ func main() {
 		} else {
 			go func() {
 				for newCfg := range cfgCh {
-					newEngine := buildEngine(newCfg)
+					newEngine, err := buildEngine(newCfg)
+					if err != nil {
+						logger.Error("hot-reload: invalid policy config, keeping current engine", zap.Error(err))
+						continue
+					}
 					srv.SwapEngine(newEngine)
 					logger.Info("engine hot-reloaded with new config")
 				}
