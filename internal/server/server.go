@@ -267,23 +267,24 @@ func (s *RLQSServer) handleMessage(
 		key := storage.BucketKeyFromProto(u.GetBucketId())
 
 		// Track subscription — first report for a bucket is the subscription signal.
-		ss.mu.Lock()
+		// Both ss.subscriptions and s.bucketRefs must be updated atomically
+		// under s.mu to prevent a race where another stream's cleanupStream
+		// sees a stale ref count and prematurely removes the bucket.
+		scopedKey := storage.DomainScopedKey(ss.domain, key)
+		s.mu.Lock()
 		_, exists := ss.subscriptions[key]
 		if !exists {
 			if s.maxBucketsPerStream > 0 && len(ss.subscriptions) >= s.maxBucketsPerStream {
-				ss.mu.Unlock()
+				s.mu.Unlock()
 				return status.Errorf(codes.ResourceExhausted,
 					"max buckets per stream exceeded (limit: %d)", s.maxBucketsPerStream)
 			}
 			ss.subscriptions[key] = struct{}{}
+			s.bucketRefs[scopedKey]++
 		}
-		ss.mu.Unlock()
+		s.mu.Unlock()
 
 		if !exists {
-			scopedKey := storage.DomainScopedKey(ss.domain, key)
-			s.mu.Lock()
-			s.bucketRefs[scopedKey]++
-			s.mu.Unlock()
 			metrics.ActiveBuckets.WithLabelValues(ss.metricDomain).Inc()
 			s.logger.Debug("bucket subscribed",
 				zap.String("domain", ss.domain),

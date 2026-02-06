@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,17 +34,22 @@ import (
 // --- fakes ---
 
 type fakeStore struct {
+	mu      sync.Mutex
 	usages  []storage.UsageReport
 	removed []storage.BucketKey
 }
 
 func (f *fakeStore) RecordUsage(_ context.Context, _ string, r storage.UsageReport) error {
+	f.mu.Lock()
 	f.usages = append(f.usages, r)
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeStore) RemoveBucket(_ context.Context, _ string, key storage.BucketKey) error {
+	f.mu.Lock()
 	f.removed = append(f.removed, key)
+	f.mu.Unlock()
 	return nil
 }
 
