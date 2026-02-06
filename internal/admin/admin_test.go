@@ -131,7 +131,55 @@ func TestDebugConfig(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	// Verify config structure is present (Go struct fields are capitalized in JSON).
-	assert.Contains(t, body, "Server")
-	assert.Contains(t, body, "Engine")
+	// Response is now wrapped: {"config": {...}, "pending_restart_changes": [...]}
+	assert.Contains(t, body, "config")
+	cfgMap, ok := body["config"].(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, cfgMap, "Server")
+	assert.Contains(t, cfgMap, "Engine")
+}
+
+func TestDebugConfigWithPendingRestartChanges(t *testing.T) {
+	h := newTestHandler(nil, storage.NewMemoryStorage())
+	h.SetPendingRestartChanges([]config.ConfigChange{
+		{Section: "server", Scope: config.ScopeRequiresRestart},
+		{Section: "storage", Scope: config.ScopeRequiresRestart},
+	})
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/debug/config", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body, "config")
+	assert.Contains(t, body, "pending_restart_changes")
+
+	pending, ok := body["pending_restart_changes"].([]any)
+	require.True(t, ok)
+	assert.Len(t, pending, 2)
+
+	first, ok := pending[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "server", first["section"])
+	assert.Equal(t, "requires-restart", first["scope"])
+}
+
+func TestDebugConfigNoPendingChanges(t *testing.T) {
+	h := newTestHandler(nil, storage.NewMemoryStorage())
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/debug/config", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	// When no pending changes, the field should be omitted (omitempty).
+	_, hasPending := body["pending_restart_changes"]
+	assert.False(t, hasPending)
 }
