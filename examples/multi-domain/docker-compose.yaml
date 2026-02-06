@@ -1,0 +1,40 @@
+# Multi-domain setup: two Envoy frontends sharing a single RLQS server.
+#
+# This demonstrates how different services can use separate domains
+# to get independent quota assignments from the same RLQS server.
+#
+#   public-envoy  (port 10000) ─┐
+#                                ├──▶ rlqs-server (port 18081)
+#   internal-envoy (port 10001) ─┘
+
+services:
+  rlqs-server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "18081:18081"
+    environment:
+      # Higher default RPS since this serves multiple frontends.
+      RLQS_DEFAULT_RPS: "200"
+      RLQS_REPORTING_INTERVAL: "5s"
+
+  # Public-facing Envoy. Routes external traffic with strict rate limits.
+  public-envoy:
+    image: envoyproxy/envoy:v1.32-latest
+    ports:
+      - "10000:10000"
+    volumes:
+      - ./envoy-public.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      - rlqs-server
+
+  # Internal Envoy. Routes service-to-service traffic.
+  internal-envoy:
+    image: envoyproxy/envoy:v1.32-latest
+    ports:
+      - "10001:10000"
+    volumes:
+      - ./envoy-internal.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      - rlqs-server
