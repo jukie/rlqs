@@ -53,6 +53,38 @@ type testEnv struct {
 	conn   *grpc.ClientConn
 }
 
+func setupWithLimits(t *testing.T, maxBuckets int, engineTimeout time.Duration) *testEnv {
+	t.Helper()
+	logger := zaptest.NewLogger(t)
+
+	st := &fakeStore{}
+	eng := &fakeEngine{}
+
+	srv := grpc.NewServer()
+	Register(srv, logger, st, eng, maxBuckets, engineTimeout)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		srv.Stop()
+		t.Fatal(err)
+	}
+
+	return &testEnv{
+		store:  st,
+		engine: eng,
+		srv:    srv,
+		client: rlqspb.NewRateLimitQuotaServiceClient(conn),
+		conn:   conn,
+	}
+}
+
 func setup(t *testing.T) *testEnv {
 	t.Helper()
 	logger := zaptest.NewLogger(t)
@@ -61,7 +93,7 @@ func setup(t *testing.T) *testEnv {
 	eng := &fakeEngine{}
 
 	srv := grpc.NewServer()
-	Register(srv, logger, st, eng)
+	Register(srv, logger, st, eng, 0, 5*time.Second)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -344,5 +376,54 @@ func TestNoResponseWhenEngineReturnsNoActions(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Fatal("expected no responses")
+	}
+}
+
+func TestMaxBucketsPerStreamExceeded(t *testing.T) {
+	env := setupWithLimits(t, 2, 5*time.Second)
+	defer env.teardown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := env.client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send 2 distinct buckets to fill the limit.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain: "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
+			usageReport(bucketID("name", "b1"), 10, 0),
+			usageReport(bucketID("name", "b2"), 10, 0),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send a third distinct bucket — should exceed the limit.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain: "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{
+			usageReport(bucketID("name", "b3"), 10, 0),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Recv should eventually return ResourceExhausted.
+	for {
+		_, err := stream.Recv()
+		if err == nil {
+			continue
+		}
+		st, ok := status.FromError(err)
+		if !ok || st.Code() != codes.ResourceExhausted {
+			t.Fatalf("expected ResourceExhausted, got %v", err)
+		}
+		break
 	}
 }

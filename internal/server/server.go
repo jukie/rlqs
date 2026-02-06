@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jukie/rlqs/internal/config"
 	"github.com/jukie/rlqs/internal/metrics"
 	"github.com/jukie/rlqs/internal/quota"
 	"github.com/jukie/rlqs/internal/storage"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 )
 
@@ -76,6 +78,9 @@ type RLQSServer struct {
 	store  storage.BucketStore
 	engine quota.Engine
 
+	maxBucketsPerStream int
+	engineTimeout       time.Duration
+
 	// mu protects streams.
 	mu      sync.Mutex
 	streams map[*streamState]struct{}
@@ -91,18 +96,20 @@ type streamState struct {
 }
 
 // NewRLQS creates a new RLQSServer with full protocol support.
-func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine) *RLQSServer {
+func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, maxBuckets int, engineTimeout time.Duration) *RLQSServer {
 	return &RLQSServer{
-		logger:  logger,
-		store:   store,
-		engine:  engine,
-		streams: make(map[*streamState]struct{}),
+		logger:              logger,
+		store:               store,
+		engine:              engine,
+		maxBucketsPerStream: maxBuckets,
+		engineTimeout:       engineTimeout,
+		streams:             make(map[*streamState]struct{}),
 	}
 }
 
 // Register adds the RLQS service to the gRPC server using the full protocol implementation.
-func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, engine quota.Engine) {
-	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine))
+func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, engine quota.Engine, maxBuckets int, engineTimeout time.Duration) {
+	rlqspb.RegisterRateLimitQuotaServiceServer(s, NewRLQS(logger, store, engine, maxBuckets, engineTimeout))
 }
 
 // StreamRateLimitQuotas implements the bidirectional streaming RPC.
@@ -181,6 +188,10 @@ func (s *RLQSServer) handleMessage(
 
 		// Track subscription — first report for a bucket is the subscription signal.
 		if _, exists := ss.subscriptions[key]; !exists {
+			if s.maxBucketsPerStream > 0 && len(ss.subscriptions) >= s.maxBucketsPerStream {
+				return status.Errorf(codes.ResourceExhausted,
+					"max buckets per stream exceeded (limit: %d)", s.maxBucketsPerStream)
+			}
 			ss.subscriptions[key] = struct{}{}
 			metrics.ActiveBuckets.WithLabelValues(ss.domain).Inc()
 			s.logger.Debug("bucket subscribed",
@@ -209,8 +220,14 @@ func (s *RLQSServer) handleMessage(
 	metrics.UsageReportsTotal.WithLabelValues(ss.domain).Add(float64(len(reports)))
 
 	// Consult the quota engine and track duration.
+	engineCtx := ctx
+	if s.engineTimeout > 0 {
+		var cancel context.CancelFunc
+		engineCtx, cancel = context.WithTimeout(ctx, s.engineTimeout)
+		defer cancel()
+	}
 	start := time.Now()
-	actions, err := s.engine.ProcessUsage(ctx, ss.domain, reports)
+	actions, err := s.engine.ProcessUsage(engineCtx, ss.domain, reports)
 	metrics.EngineDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		s.logger.Error("engine error", zap.String("domain", ss.domain), zap.Error(err))
@@ -270,9 +287,20 @@ func (s *RLQSServer) cleanupStream(ss *streamState) {
 	}
 }
 
-// DefaultServerOptions returns the standard set of server options with recovery, logging, and Prometheus metrics.
-func DefaultServerOptions(logger *zap.Logger) []grpc.ServerOption {
+// DefaultServerOptions returns the standard set of server options with recovery, logging, Prometheus metrics,
+// keepalive, and concurrency limits derived from the server config.
+func DefaultServerOptions(logger *zap.Logger, cfg config.ServerConfig) []grpc.ServerOption {
 	return []grpc.ServerOption{
+		grpc.MaxConcurrentStreams(cfg.MaxConcurrentStreams),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: cfg.KeepaliveMaxIdleTime.Duration,
+			Time:              cfg.KeepalivePingInterval.Duration,
+			Timeout:           cfg.KeepalivePingTimeout.Duration,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             30 * time.Second,
+			PermitWithoutStream: true,
+		}),
 		grpc.ChainStreamInterceptor(
 			grpc_prometheus.StreamServerInterceptor,
 			loggingStreamInterceptor(logger),
@@ -293,11 +321,11 @@ type Server struct {
 }
 
 // New creates a Server that uses the full-protocol RLQSServer with health checks.
-func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, opts ...grpc.ServerOption) *Server {
+func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg config.ServerConfig, opts ...grpc.ServerOption) *Server {
 	grpcSrv := grpc.NewServer(opts...)
 	healthSrv := health.NewServer()
 
-	Register(grpcSrv, logger, store, engine)
+	Register(grpcSrv, logger, store, engine, cfg.MaxBucketsPerStream, cfg.EngineTimeout.Duration)
 	healthpb.RegisterHealthServer(grpcSrv, healthSrv)
 
 	// Initialize gRPC Prometheus metrics.

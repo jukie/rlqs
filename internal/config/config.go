@@ -27,6 +27,16 @@ type RedisConfig struct {
 type ServerConfig struct {
 	GRPCAddr    string `yaml:"grpc_addr"`
 	MetricsAddr string `yaml:"metrics_addr"`
+
+	// Backpressure / server protection
+	MaxConcurrentStreams uint32   `yaml:"max_concurrent_streams"`
+	MaxBucketsPerStream  int      `yaml:"max_buckets_per_stream"`
+	EngineTimeout        Duration `yaml:"engine_timeout"`
+
+	// Keepalive
+	KeepaliveMaxIdleTime  Duration `yaml:"keepalive_max_idle_time"`
+	KeepalivePingInterval Duration `yaml:"keepalive_ping_interval"`
+	KeepalivePingTimeout  Duration `yaml:"keepalive_ping_timeout"`
 }
 
 type Duration struct {
@@ -63,8 +73,14 @@ type PolicyConfig struct {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			GRPCAddr:    ":18081",
-			MetricsAddr: ":9090",
+			GRPCAddr:             ":18081",
+			MetricsAddr:          ":9090",
+			MaxConcurrentStreams: 1000,
+			MaxBucketsPerStream:  100,
+			EngineTimeout:        Duration{5 * time.Second},
+			KeepaliveMaxIdleTime:  Duration{5 * time.Minute},
+			KeepalivePingInterval: Duration{1 * time.Minute},
+			KeepalivePingTimeout:  Duration{20 * time.Second},
 		},
 		Engine: EngineConfig{
 			DefaultRPS:        100,

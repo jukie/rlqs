@@ -115,7 +115,7 @@ func main() {
 	store := buildStore(cfg, logger)
 	eng := buildEngine(cfg)
 
-	srv := server.New(logger, store, eng, server.DefaultServerOptions(logger)...)
+	srv := server.New(logger, store, eng, cfg.Server, server.DefaultServerOptions(logger, cfg.Server)...)
 
 	lis, err := net.Listen("tcp", cfg.Server.GRPCAddr)
 	if err != nil {
