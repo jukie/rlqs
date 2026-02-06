@@ -231,7 +231,9 @@ func TestE2E_GRPCStreaming(t *testing.T) {
 
 	qa := action.GetQuotaAssignmentAction()
 	require.NotNil(t, qa, "expected quota assignment action")
-	assert.Equal(t, uint64(5), qa.GetRateLimitStrategy().GetRequestsPerTimeUnit().GetRequestsPerTimeUnit())
+	tb := qa.GetRateLimitStrategy().GetTokenBucket()
+	require.NotNil(t, tb, "expected token bucket strategy")
+	assert.Equal(t, uint32(5), tb.GetMaxTokens())
 }
 
 func TestE2E_Reconnection(t *testing.T) {
