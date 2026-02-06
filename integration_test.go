@@ -19,6 +19,8 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
+func durationPtr(d time.Duration) *time.Duration { return &d }
+
 func setupServer(t *testing.T, rps uint64) (*server.Server, *storage.MemoryStorage, string) {
 	t.Helper()
 
@@ -34,7 +36,7 @@ func setupServer(t *testing.T, rps uint64) (*server.Server, *storage.MemoryStora
 				},
 			},
 		},
-		AssignmentTTL: 10 * time.Second,
+		AssignmentTTL: durationPtr(10 * time.Second),
 	})
 
 	srv := server.New(logger, store, eng, config.ServerConfig{}, nil)
@@ -272,7 +274,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 				},
 			},
 		},
-		AssignmentTTL: 20 * time.Second,
+		AssignmentTTL: durationPtr(20 * time.Second),
 	})
 
 	srv := server.New(logger, store, eng, config.ServerConfig{}, nil)

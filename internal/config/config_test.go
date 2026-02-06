@@ -14,8 +14,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Server.GRPCAddr != ":18081" {
 		t.Fatalf("expected :18081, got %s", cfg.Server.GRPCAddr)
 	}
-	if cfg.Engine.DefaultRPS != 100 {
-		t.Fatalf("expected 100, got %d", cfg.Engine.DefaultRPS)
+	if cfg.Engine.DefaultTokensPerFill != 100 {
+		t.Fatalf("expected 100, got %d", cfg.Engine.DefaultTokensPerFill)
 	}
 	if cfg.Engine.ReportingInterval.Duration != 10*time.Second {
 		t.Fatalf("expected 10s, got %v", cfg.Engine.ReportingInterval)
@@ -29,6 +29,7 @@ func TestLoadYAML(t *testing.T) {
 	}
 	defer os.Remove(f.Name())
 
+	// Tests backward compat: default_rps resolves to DefaultTokensPerFill
 	_, err = f.WriteString(`server:
   grpc_addr: ":9090"
 engine:
@@ -47,8 +48,8 @@ engine:
 	if cfg.Server.GRPCAddr != ":9090" {
 		t.Fatalf("expected :9090, got %s", cfg.Server.GRPCAddr)
 	}
-	if cfg.Engine.DefaultRPS != 50 {
-		t.Fatalf("expected 50, got %d", cfg.Engine.DefaultRPS)
+	if cfg.Engine.DefaultTokensPerFill != 50 {
+		t.Fatalf("expected 50, got %d", cfg.Engine.DefaultTokensPerFill)
 	}
 	if cfg.Engine.ReportingInterval.Duration != 5*time.Second {
 		t.Fatalf("expected 5s, got %v", cfg.Engine.ReportingInterval)
@@ -57,7 +58,7 @@ engine:
 
 func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("RLQS_GRPC_ADDR", ":7070")
-	t.Setenv("RLQS_DEFAULT_RPS", "200")
+	t.Setenv("RLQS_DEFAULT_RPS", "200") // Deprecated env var, still works
 	t.Setenv("RLQS_REPORTING_INTERVAL", "30s")
 
 	cfg, err := Load("")
@@ -67,11 +68,23 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if cfg.Server.GRPCAddr != ":7070" {
 		t.Fatalf("expected :7070, got %s", cfg.Server.GRPCAddr)
 	}
-	if cfg.Engine.DefaultRPS != 200 {
-		t.Fatalf("expected 200, got %d", cfg.Engine.DefaultRPS)
+	if cfg.Engine.DefaultTokensPerFill != 200 {
+		t.Fatalf("expected 200, got %d", cfg.Engine.DefaultTokensPerFill)
 	}
 	if cfg.Engine.ReportingInterval.Duration != 30*time.Second {
 		t.Fatalf("expected 30s, got %v", cfg.Engine.ReportingInterval)
+	}
+}
+
+func TestLoadNewTokensPerFillEnvOverride(t *testing.T) {
+	t.Setenv("RLQS_DEFAULT_TOKENS_PER_FILL", "300")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Engine.DefaultTokensPerFill != 300 {
+		t.Fatalf("expected 300, got %d", cfg.Engine.DefaultTokensPerFill)
 	}
 }
 
@@ -308,13 +321,13 @@ func TestLoadPolicyWithDenyResponse(t *testing.T) {
 		t.Fatal("expected no deny_response for allow policy")
 	}
 
-	// Token bucket policy (default strategy)
+	// Token bucket policy (default strategy) — uses deprecated 'rps' YAML field
 	tb := cfg.Engine.Policies[2]
 	if tb.Strategy != "" {
 		t.Fatalf("expected empty strategy (default), got %q", tb.Strategy)
 	}
-	if tb.RPS != 500 {
-		t.Fatalf("expected rps 500, got %d", tb.RPS)
+	if tb.TokensPerFill != 500 {
+		t.Fatalf("expected tokens_per_fill 500, got %d", tb.TokensPerFill)
 	}
 }
 
@@ -345,7 +358,93 @@ engine:
 	if cfg.Server.GRPCAddr != ":7070" {
 		t.Fatalf("env should override YAML: expected :7070, got %s", cfg.Server.GRPCAddr)
 	}
-	if cfg.Engine.DefaultRPS != 50 {
-		t.Fatalf("expected YAML value 50, got %d", cfg.Engine.DefaultRPS)
+	if cfg.Engine.DefaultTokensPerFill != 50 {
+		t.Fatalf("expected YAML value 50, got %d", cfg.Engine.DefaultTokensPerFill)
+	}
+}
+
+func TestLoadRequestsPerTimeUnitPolicy(t *testing.T) {
+	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	_, err = f.WriteString(`engine:
+  default_tokens_per_fill: 100
+  reporting_interval: "10s"
+  policies:
+    - domain_pattern: "^api\\."
+      strategy: "requests_per_time_unit"
+      requests_per_time_unit: 1000
+      time_unit: "minute"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Engine.Policies) != 1 {
+		t.Fatalf("expected 1 policy, got %d", len(cfg.Engine.Policies))
+	}
+	p := cfg.Engine.Policies[0]
+	if p.Strategy != "requests_per_time_unit" {
+		t.Fatalf("expected strategy requests_per_time_unit, got %q", p.Strategy)
+	}
+	if p.RequestsPerTimeUnit != 1000 {
+		t.Fatalf("expected 1000, got %d", p.RequestsPerTimeUnit)
+	}
+	if p.TimeUnit != "minute" {
+		t.Fatalf("expected minute, got %q", p.TimeUnit)
+	}
+}
+
+func TestLoadAssignmentTTLZero(t *testing.T) {
+	f, err := os.CreateTemp("", "rlqs-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	_, err = f.WriteString(`engine:
+  default_tokens_per_fill: 100
+  reporting_interval: "10s"
+  policies:
+    - domain_pattern: "^api\\."
+      tokens_per_fill: 50
+      assignment_ttl: "0s"
+    - domain_pattern: "^web\\."
+      tokens_per_fill: 100
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Engine.Policies) != 2 {
+		t.Fatalf("expected 2 policies, got %d", len(cfg.Engine.Policies))
+	}
+
+	// TTL=0s should be explicitly set (non-nil, zero value)
+	p0 := cfg.Engine.Policies[0]
+	if p0.AssignmentTTL == nil {
+		t.Fatal("expected non-nil AssignmentTTL for TTL=0s")
+	}
+	if p0.AssignmentTTL.Duration != 0 {
+		t.Fatalf("expected 0s, got %v", p0.AssignmentTTL.Duration)
+	}
+
+	// Omitted TTL should be nil
+	p1 := cfg.Engine.Policies[1]
+	if p1.AssignmentTTL != nil {
+		t.Fatalf("expected nil AssignmentTTL for omitted TTL, got %v", p1.AssignmentTTL.Duration)
 	}
 }

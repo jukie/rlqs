@@ -8,7 +8,7 @@ import (
 func TestDiffNoChanges(t *testing.T) {
 	cfg := &Config{
 		Server:  ServerConfig{GRPCAddr: ":18081"},
-		Engine:  EngineConfig{DefaultRPS: 100},
+		Engine:  EngineConfig{DefaultTokensPerFill: 100},
 		Storage: StorageConfig{Type: "memory"},
 	}
 	changes := Diff(cfg, cfg)
@@ -18,8 +18,8 @@ func TestDiffNoChanges(t *testing.T) {
 }
 
 func TestDiffEngineOnly(t *testing.T) {
-	old := &Config{Engine: EngineConfig{DefaultRPS: 100}}
-	new := &Config{Engine: EngineConfig{DefaultRPS: 200}}
+	old := &Config{Engine: EngineConfig{DefaultTokensPerFill: 100}}
+	new := &Config{Engine: EngineConfig{DefaultTokensPerFill: 200}}
 
 	changes := Diff(old, new)
 	if len(changes) != 1 {
@@ -77,13 +77,13 @@ func TestDiffTracingRequiresRestart(t *testing.T) {
 
 func TestDiffMultipleSections(t *testing.T) {
 	old := &Config{
-		Engine:  EngineConfig{DefaultRPS: 100},
+		Engine:  EngineConfig{DefaultTokensPerFill: 100},
 		Server:  ServerConfig{GRPCAddr: ":18081"},
 		Storage: StorageConfig{Type: "memory"},
 		Tracing: TracingConfig{Enabled: false},
 	}
 	new := &Config{
-		Engine:  EngineConfig{DefaultRPS: 200},
+		Engine:  EngineConfig{DefaultTokensPerFill: 200},
 		Server:  ServerConfig{GRPCAddr: ":18082"},
 		Storage: StorageConfig{Type: "redis"},
 		Tracing: TracingConfig{Enabled: true},
@@ -115,16 +115,16 @@ func TestDiffMultipleSections(t *testing.T) {
 func TestDiffPolicyChange(t *testing.T) {
 	old := &Config{
 		Engine: EngineConfig{
-			DefaultRPS:        100,
-			ReportingInterval: Duration{10 * time.Second},
+			DefaultTokensPerFill: 100,
+			ReportingInterval:    Duration{10 * time.Second},
 		},
 	}
 	new := &Config{
 		Engine: EngineConfig{
-			DefaultRPS:        100,
-			ReportingInterval: Duration{10 * time.Second},
+			DefaultTokensPerFill: 100,
+			ReportingInterval:    Duration{10 * time.Second},
 			Policies: []PolicyConfig{
-				{DomainPattern: "*.example.com", RPS: 50},
+				{DomainPattern: "*.example.com", TokensPerFill: 50},
 			},
 		},
 	}

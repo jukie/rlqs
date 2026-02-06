@@ -2,8 +2,9 @@ server:
   grpc_addr: ":18081"
 
 engine:
-  # Every bucket gets this rate limit until you implement per-bucket logic.
-  default_rps: 100
+  # Tokens added per reporting interval for the default token bucket strategy.
+  # With reporting_interval=10s, this means 100 tokens per 10 seconds (10 tokens/s).
+  default_tokens_per_fill: 100
 
   # Should match or exceed the reporting_interval configured in envoy.yaml.
   reporting_interval: "10s"

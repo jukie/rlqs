@@ -44,8 +44,8 @@ func TestWatcherSendsConfigOnChange(t *testing.T) {
 
 	select {
 	case cfg := <-ch:
-		if cfg.Engine.DefaultRPS != 200 {
-			t.Fatalf("expected default_rps=200, got %d", cfg.Engine.DefaultRPS)
+		if cfg.Engine.DefaultTokensPerFill != 200 {
+			t.Fatalf("expected default_tokens_per_fill=200, got %d", cfg.Engine.DefaultTokensPerFill)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for config reload")

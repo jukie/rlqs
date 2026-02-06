@@ -24,7 +24,9 @@ type DefaultEngineConfig struct {
 	DefaultStrategy *typev3.RateLimitStrategy
 
 	// AssignmentTTL is the TTL sent to clients with each quota assignment.
-	AssignmentTTL time.Duration
+	// When nil, no TTL is sent (Envoy treats as no expiration).
+	// When non-nil (including zero), the value is sent to the client.
+	AssignmentTTL *time.Duration
 }
 
 // DefaultEngine implements the Engine interface, producing quota assignment actions
@@ -51,8 +53,8 @@ func (e *DefaultEngine) ProcessUsage(_ context.Context, _ string, reports []stor
 		}
 
 		assignment := &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{}
-		if e.cfg.AssignmentTTL > 0 {
-			assignment.AssignmentTimeToLive = durationpb.New(e.cfg.AssignmentTTL)
+		if e.cfg.AssignmentTTL != nil {
+			assignment.AssignmentTimeToLive = durationpb.New(*e.cfg.AssignmentTTL)
 		}
 		if e.cfg.DefaultStrategy != nil {
 			assignment.RateLimitStrategy = e.cfg.DefaultStrategy

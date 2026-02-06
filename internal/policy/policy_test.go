@@ -13,6 +13,8 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+func durationPtr(d time.Duration) *time.Duration { return &d }
+
 func TestPolicyMatches(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -134,12 +136,12 @@ func TestEngineProcessUsage(t *testing.T) {
 				DomainPattern:    "^api\\.",
 				BucketKeyPattern: "",
 				Strategy:         strategy1000,
-				AssignmentTTL:    20 * time.Second,
+				AssignmentTTL:    durationPtr(20 * time.Second),
 			},
 		},
 		DefaultPolicy: Policy{
 			Strategy:      strategy100,
-			AssignmentTTL: 10 * time.Second,
+			AssignmentTTL: durationPtr(10 * time.Second),
 		},
 	})
 	if err != nil {
@@ -284,12 +286,12 @@ func TestEngineDenyAllStrategy(t *testing.T) {
 			{
 				DomainPattern: "^blocked\\.",
 				Strategy:      denyStrategy,
-				AssignmentTTL: 30 * time.Second,
+				AssignmentTTL: durationPtr(30 * time.Second),
 			},
 		},
 		DefaultPolicy: Policy{
 			Strategy:      defaultStrategy,
-			AssignmentTTL: 10 * time.Second,
+			AssignmentTTL: durationPtr(10 * time.Second),
 		},
 	})
 	if err != nil {
@@ -368,12 +370,12 @@ func TestEngineAllowAllStrategy(t *testing.T) {
 			{
 				DomainPattern: "^internal\\.",
 				Strategy:      allowStrategy,
-				AssignmentTTL: 60 * time.Second,
+				AssignmentTTL: durationPtr(60 * time.Second),
 			},
 		},
 		DefaultPolicy: Policy{
 			Strategy:      defaultStrategy,
-			AssignmentTTL: 10 * time.Second,
+			AssignmentTTL: durationPtr(10 * time.Second),
 		},
 	})
 	if err != nil {
@@ -422,7 +424,7 @@ func TestPolicyWithDenyResponse(t *testing.T) {
 	p := Policy{
 		DomainPattern: "^blocked\\.",
 		Strategy:      denyStrategy,
-		AssignmentTTL: 30 * time.Second,
+		AssignmentTTL: durationPtr(30 * time.Second),
 		DenyResponse: &config.DenyResponseConfig{
 			HTTPStatus:        403,
 			HTTPBody:          `{"error": "forbidden"}`,

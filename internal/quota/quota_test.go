@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func durationPtr(d time.Duration) *time.Duration { return &d }
+
 func TestDefaultEngine_ProcessUsageEmpty(t *testing.T) {
 	eng := NewDefaultEngine(DefaultEngineConfig{})
 	actions, err := eng.ProcessUsage(context.Background(), "test", nil)
@@ -31,7 +33,7 @@ func TestDefaultEngine_ProcessUsageAssignment(t *testing.T) {
 
 	eng := NewDefaultEngine(DefaultEngineConfig{
 		DefaultStrategy: strategy,
-		AssignmentTTL:   20 * time.Second,
+		AssignmentTTL:   durationPtr(20 * time.Second),
 	})
 
 	reports := []storage.UsageReport{
@@ -84,7 +86,7 @@ func TestDefaultEngine_MultipleBuckets(t *testing.T) {
 				BlanketRule: typev3.RateLimitStrategy_ALLOW_ALL,
 			},
 		},
-		AssignmentTTL: 30 * time.Second,
+		AssignmentTTL: durationPtr(30 * time.Second),
 	})
 
 	reports := []storage.UsageReport{
