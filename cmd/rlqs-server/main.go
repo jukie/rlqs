@@ -15,6 +15,8 @@ import (
 
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func main() {
@@ -35,10 +37,11 @@ func main() {
 	store := storage.NewMemoryStorage()
 	eng := quota.NewDefaultEngine(quota.DefaultEngineConfig{
 		DefaultStrategy: &typev3.RateLimitStrategy{
-			Strategy: &typev3.RateLimitStrategy_RequestsPerTimeUnit_{
-				RequestsPerTimeUnit: &typev3.RateLimitStrategy_RequestsPerTimeUnit{
-					RequestsPerTimeUnit: cfg.Engine.DefaultRPS,
-					TimeUnit:            typev3.RateLimitUnit_SECOND,
+			Strategy: &typev3.RateLimitStrategy_TokenBucket{
+				TokenBucket: &typev3.TokenBucket{
+					MaxTokens:     uint32(cfg.Engine.DefaultRPS),
+					TokensPerFill: wrapperspb.UInt32(uint32(cfg.Engine.DefaultRPS)),
+					FillInterval:  durationpb.New(cfg.Engine.ReportingInterval.Duration),
 				},
 			},
 		},

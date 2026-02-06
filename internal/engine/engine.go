@@ -7,6 +7,7 @@ import (
 	rlqspb "github.com/envoyproxy/go-control-plane/envoy/service/rate_limit_quota/v3"
 	typepb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Engine evaluates usage reports and produces quota assignments.
@@ -39,10 +40,11 @@ func (e *Engine) ProcessReport(report *rlqspb.RateLimitQuotaUsageReports) *rlqsp
 				QuotaAssignmentAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{
 					AssignmentTimeToLive: durationpb.New(e.cfg.ReportingInterval.Duration * 2),
 					RateLimitStrategy: &typepb.RateLimitStrategy{
-						Strategy: &typepb.RateLimitStrategy_RequestsPerTimeUnit_{
-							RequestsPerTimeUnit: &typepb.RateLimitStrategy_RequestsPerTimeUnit{
-								RequestsPerTimeUnit: e.cfg.DefaultRPS,
-								TimeUnit:            typepb.RateLimitUnit_SECOND,
+						Strategy: &typepb.RateLimitStrategy_TokenBucket{
+							TokenBucket: &typepb.TokenBucket{
+								MaxTokens:     uint32(e.cfg.DefaultRPS),
+								TokensPerFill: wrapperspb.UInt32(uint32(e.cfg.DefaultRPS)),
+								FillInterval:  durationpb.New(e.cfg.ReportingInterval.Duration),
 							},
 						},
 					},
