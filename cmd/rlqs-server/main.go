@@ -238,6 +238,19 @@ func main() {
 		logger.Error("metrics server shutdown error", zap.Error(err))
 	}
 
-	srv.GracefulStop()
-	logger.Info("server stopped")
+	// GracefulStop blocks until all streams close. Run it in a goroutine
+	// with a deadline so we fall back to forceful Stop if it hangs.
+	stopped := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		logger.Info("server stopped gracefully")
+	case <-shutdownCtx.Done():
+		logger.Warn("graceful shutdown timed out, forcing stop")
+		srv.Stop()
+	}
 }
