@@ -7,22 +7,28 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // RedisConfig holds configuration for the Redis storage backend.
 type RedisConfig struct {
-	Addr     string
-	PoolSize int
-	KeyTTL   time.Duration
+	Addr            string
+	PoolSize        int
+	KeyTTL          time.Duration
+	Logger          *zap.Logger
+	MaxFallbackKeys int
 }
 
 // RedisStorage implements BucketStore backed by Redis.
 // It uses HINCRBY for atomic counter updates and EXPIRE for auto-cleanup.
 // A circuit breaker falls back to in-memory storage when Redis is unreachable.
+// On recovery, accumulated fallback data is flushed to Redis.
 type RedisStorage struct {
-	client   *redis.Client
-	fallback *MemoryStorage
-	keyTTL   time.Duration
+	client          *redis.Client
+	fallback        *MemoryStorage
+	keyTTL          time.Duration
+	logger          *zap.Logger
+	maxFallbackKeys int
 
 	// Circuit breaker state.
 	mu            sync.RWMutex
@@ -37,6 +43,7 @@ const (
 
 	defaultRetryInterval = 5 * time.Second
 	defaultKeyTTL        = 60 * time.Second
+	defaultMaxFallback   = 10000
 )
 
 // NewRedisStorage creates a new Redis-backed BucketStore with circuit breaker fallback.
@@ -49,6 +56,14 @@ func NewRedisStorage(cfg RedisConfig) *RedisStorage {
 	if ttl <= 0 {
 		ttl = defaultKeyTTL
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	maxFallback := cfg.MaxFallbackKeys
+	if maxFallback <= 0 {
+		maxFallback = defaultMaxFallback
+	}
 
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
@@ -56,10 +71,12 @@ func NewRedisStorage(cfg RedisConfig) *RedisStorage {
 	})
 
 	return &RedisStorage{
-		client:        client,
-		fallback:      NewMemoryStorage(),
-		keyTTL:        ttl,
-		retryInterval: defaultRetryInterval,
+		client:          client,
+		fallback:        NewMemoryStorage(),
+		keyTTL:          ttl,
+		logger:          logger,
+		maxFallbackKeys: maxFallback,
+		retryInterval:   defaultRetryInterval,
 	}
 }
 
@@ -72,7 +89,15 @@ func (s *RedisStorage) RecordUsage(ctx context.Context, domain string, report Us
 	if s.isTripped() {
 		if s.shouldRetry() {
 			if err := s.tryRedisRecordUsage(ctx, scopedKey, report); err == nil {
-				s.reset()
+				s.recoverFromFallback(ctx)
+				return nil
+			}
+		}
+		if s.maxFallbackKeys > 0 && s.fallback.Len() >= s.maxFallbackKeys {
+			// Only drop if this would create a new entry; updates to existing keys are allowed.
+			if _, exists := s.fallback.Get(DomainScopedKey(domain, key)); !exists {
+				s.logger.Warn("fallback store at capacity, dropping usage report",
+					zap.Int("max_keys", s.maxFallbackKeys))
 				return nil
 			}
 		}
@@ -94,7 +119,7 @@ func (s *RedisStorage) RemoveBucket(ctx context.Context, domain string, key Buck
 	if s.isTripped() {
 		if s.shouldRetry() {
 			if err := s.client.Del(ctx, scopedKey).Err(); err == nil {
-				s.reset()
+				s.recoverFromFallback(ctx)
 				return nil
 			}
 		}
@@ -122,6 +147,48 @@ func (s *RedisStorage) tryRedisRecordUsage(ctx context.Context, key string, repo
 	return err
 }
 
+// recoverFromFallback flushes accumulated fallback data to Redis and resets the circuit breaker.
+func (s *RedisStorage) recoverFromFallback(ctx context.Context) {
+	s.flushFallback(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tripped.Store(false)
+}
+
+// flushFallback migrates accumulated in-memory fallback data to Redis.
+// On failure, logs a warning documenting the data loss. The fallback store
+// is always cleared afterward to prevent stale data on the next outage.
+func (s *RedisStorage) flushFallback(ctx context.Context) {
+	entries := s.fallback.All()
+	if len(entries) == 0 {
+		return
+	}
+
+	pipe := s.client.Pipeline()
+	for key, state := range entries {
+		k := string(key)
+		if state.Allowed > 0 {
+			pipe.HIncrBy(ctx, k, fieldAllowed, int64(state.Allowed))
+		}
+		if state.Denied > 0 {
+			pipe.HIncrBy(ctx, k, fieldDenied, int64(state.Denied))
+		}
+		pipe.Expire(ctx, k, s.keyTTL)
+	}
+
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		s.logger.Warn("failed to flush fallback data to Redis on recovery, data lost",
+			zap.Int("entries", len(entries)),
+			zap.Error(err))
+	} else {
+		s.logger.Info("flushed fallback data to Redis on recovery",
+			zap.Int("entries", len(entries)))
+	}
+
+	s.fallback.Clear()
+}
+
 func (s *RedisStorage) isTripped() bool {
 	return s.tripped.Load()
 }
@@ -131,12 +198,6 @@ func (s *RedisStorage) trip() {
 	defer s.mu.Unlock()
 	s.tripped.Store(true)
 	s.lastAttempt = time.Now()
-}
-
-func (s *RedisStorage) reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tripped.Store(false)
 }
 
 func (s *RedisStorage) shouldRetry() bool {
