@@ -1,0 +1,36 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  rlqs-1:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["-config", "/etc/rlqs/config.yaml"]
+    volumes:
+      - ./rlqs-config.yaml:/etc/rlqs/config.yaml:ro
+    depends_on:
+      - redis
+
+  rlqs-2:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["-config", "/etc/rlqs/config.yaml"]
+    volumes:
+      - ./rlqs-config.yaml:/etc/rlqs/config.yaml:ro
+    depends_on:
+      - redis
+
+  envoy:
+    image: envoyproxy/envoy:v1.37-latest
+    ports:
+      - "10000:10000"   # HTTP listener
+      - "9901:9901"     # Envoy admin
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      - rlqs-1
+      - rlqs-2

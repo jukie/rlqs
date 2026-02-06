@@ -148,6 +148,11 @@ See [`examples/`](examples/) for ready-to-run setups:
 |---------|-------------|
 | [`basic`](examples/basic/) | Single Envoy + RLQS server with header-based bucket matching |
 | [`multi-domain`](examples/multi-domain/) | Multiple Envoy frontends sharing one RLQS server with per-domain quotas |
+| [`ha`](examples/ha/) | Two RLQS instances with shared Redis storage and Envoy failover |
+
+## High Availability
+
+RLQS supports running multiple stateless instances behind a load balancer with shared Redis storage. No distributed consensus is required -- quota assignments come from static policy config and usage tracking is best-effort. See [docs/ha.md](docs/ha.md) for the full architecture and failure recovery documentation.
 
 ## How Envoy's RLQS filter works
 
