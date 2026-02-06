@@ -46,17 +46,17 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 func (h *Handler) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (h *Handler) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 }
 
 func (h *Handler) handleDebugStreams(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.streamStats())
+	_ = json.NewEncoder(w).Encode(h.streamStats())
 }
 
 func (h *Handler) handleDebugBuckets(w http.ResponseWriter, r *http.Request) {
@@ -98,10 +98,10 @@ func (h *Handler) handleDebugBuckets(w http.ResponseWriter, r *http.Request) {
 	if result == nil {
 		result = []bucketEntry{}
 	}
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (h *Handler) handleDebugConfig(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.cfg)
+	_ = json.NewEncoder(w).Encode(h.cfg)
 }

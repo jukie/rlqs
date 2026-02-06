@@ -118,11 +118,11 @@ type PolicyConfig struct {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			GRPCAddr:             ":18081",
-			MetricsAddr:          ":9090",
-			MaxConcurrentStreams: 1000,
-			MaxBucketsPerStream:  100,
-			EngineTimeout:        Duration{5 * time.Second},
+			GRPCAddr:              ":18081",
+			MetricsAddr:           ":9090",
+			MaxConcurrentStreams:  1000,
+			MaxBucketsPerStream:   100,
+			EngineTimeout:         Duration{5 * time.Second},
 			KeepaliveMaxIdleTime:  Duration{5 * time.Minute},
 			KeepalivePingInterval: Duration{1 * time.Minute},
 			KeepalivePingTimeout:  Duration{20 * time.Second},
