@@ -1,0 +1,37 @@
+services:
+  rlqs-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - RLQS_GRPC_ADDR=:18081
+      - RLQS_DEFAULT_RPS=5
+      - RLQS_REPORTING_INTERVAL=2s
+    ports:
+      - "18081:18081"
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+
+  envoy:
+    image: envoyproxy/envoy-contrib:v1.33-latest
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    ports:
+      - "10000:10000"
+      - "9901:9901"
+    depends_on:
+      rlqs-server:
+        condition: service_started
+      upstream:
+        condition: service_started
+
+  upstream:
+    image: nginx:alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro

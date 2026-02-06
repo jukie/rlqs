@@ -1,0 +1,66 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Start services
+        working-directory: e2e
+        run: docker compose -f docker-compose.yaml up -d --build --wait
+
+      - name: Wait for RLQS server
+        run: |
+          for i in $(seq 1 30); do
+            if nc -z localhost 18081 2>/dev/null; then
+              echo "RLQS server ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "RLQS server not ready"
+          exit 1
+
+      - name: Wait for Envoy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:10000/allow > /dev/null 2>&1; then
+              echo "Envoy ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Envoy not ready"
+          docker compose -f e2e/docker-compose.yaml logs
+          exit 1
+
+      - name: Run E2E tests
+        env:
+          E2E_SKIP_COMPOSE: "1"
+          E2E_ENVOY_ADDR: "localhost:10000"
+          E2E_RLQS_ADDR: "localhost:18081"
+          E2E_DIR: "./e2e"
+        run: go test -tags=e2e -v -timeout=5m ./e2e/
+
+      - name: Dump logs on failure
+        if: failure()
+        working-directory: e2e
+        run: docker compose -f docker-compose.yaml logs
+
+      - name: Tear down
+        if: always()
+        working-directory: e2e
+        run: docker compose -f docker-compose.yaml down -v --remove-orphans
