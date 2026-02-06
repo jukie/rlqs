@@ -1,0 +1,28 @@
+services:
+  rlqs-server:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command: ["rlqs-server", "--config", "/etc/rlqs/config.yaml"]
+    volumes:
+      - ./rlqs-config.yaml:/etc/rlqs/config.yaml:ro
+    ports:
+      - "18081:18081"
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+
+  envoy:
+    image: envoyproxy/envoy:v1.32-latest
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "10000:10000"
+      - "9901:9901"
+    depends_on:
+      rlqs-server:
+        condition: service_started

@@ -4,7 +4,7 @@ BUILD_DIR := bin
 GO        := go
 GOFLAGS   :=
 
-.PHONY: all build test lint proto-gen clean fmt vet
+.PHONY: all build test lint proto-gen clean fmt vet e2e e2e-up e2e-down
 
 all: lint test build
 
@@ -28,3 +28,13 @@ vet:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+e2e: e2e-up
+	$(GO) test -tags=e2e -v -count=1 -timeout=5m ./test/e2e/ || ($(MAKE) e2e-down; exit 1)
+	$(MAKE) e2e-down
+
+e2e-up:
+	docker compose -f test/e2e/testdata/docker-compose.yaml up -d --build --wait
+
+e2e-down:
+	docker compose -f test/e2e/testdata/docker-compose.yaml down -v

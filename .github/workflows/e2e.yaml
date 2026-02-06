@@ -1,0 +1,62 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build RLQS server image
+        run: docker compose -f test/e2e/testdata/docker-compose.yaml build
+
+      - name: Start services
+        run: docker compose -f test/e2e/testdata/docker-compose.yaml up -d
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Envoy..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9901/ready > /dev/null 2>&1; then
+              echo "Envoy ready"
+              break
+            fi
+            sleep 2
+          done
+          echo "Waiting for RLQS server..."
+          for i in $(seq 1 30); do
+            if grpcurl -plaintext localhost:18081 grpc.health.v1.Health/Check > /dev/null 2>&1; then
+              echo "RLQS server ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run E2E tests
+        run: go test -tags=e2e -v -count=1 -timeout=5m ./test/e2e/
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== RLQS Server Logs ==="
+          docker compose -f test/e2e/testdata/docker-compose.yaml logs rlqs-server
+          echo ""
+          echo "=== Envoy Logs ==="
+          docker compose -f test/e2e/testdata/docker-compose.yaml logs envoy
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f test/e2e/testdata/docker-compose.yaml down -v

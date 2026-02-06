@@ -1,0 +1,6 @@
+server:
+  grpc_addr: ":18081"
+
+engine:
+  default_rps: 5
+  reporting_interval: "2s"
