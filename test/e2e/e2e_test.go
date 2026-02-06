@@ -140,21 +140,11 @@ func TestE2E_BasicRateLimiting(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Phase 2: Send a burst of requests — RLQS configured with 5 RPS.
-	// We send 30 requests quickly; at 5 RPS, most should be rate-limited.
-	var ok, limited int
-	for i := 0; i < 30; i++ {
-		code, err := sendRequest(fmt.Sprintf("/test-%d", i))
-		require.NoError(t, err)
-		switch code {
-		case http.StatusOK:
-			ok++
-		case http.StatusTooManyRequests:
-			limited++
-		default:
-			t.Errorf("unexpected status code: %d", code)
-		}
-	}
+	// We send 30 requests concurrently; at 5 RPS, most should be rate-limited.
+	counts := sendBurst(30, "/test")
 
+	ok := counts[http.StatusOK]
+	limited := counts[http.StatusTooManyRequests]
 	t.Logf("results: %d OK, %d rate-limited (429)", ok, limited)
 
 	// We expect some requests to be allowed (up to 5) and some to be limited.
