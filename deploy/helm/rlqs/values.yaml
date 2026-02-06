@@ -30,6 +30,34 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
+  # Scale on rlqs_active_streams custom metric via prometheus-adapter.
+  # Requires prometheus-adapter configured with the rule in
+  # deploy/prometheus-adapter/values.yaml.
+  activeStreams:
+    enabled: false
+    targetAverageValue: "100"
+  # behavior controls scale-up/down velocity (autoscaling/v2 behavior spec).
+  behavior: {}
+    # scaleDown:
+    #   stabilizationWindowSeconds: 300
+    #   policies:
+    #     - type: Pods
+    #       value: 1
+    #       periodSeconds: 60
+    # scaleUp:
+    #   stabilizationWindowSeconds: 0
+    #   policies:
+    #     - type: Pods
+    #       value: 2
+    #       periodSeconds: 60
+
+serviceMonitor:
+  enabled: false
+  interval: "15s"
+  labels: {}
+  # Additional labels to add to the ServiceMonitor (e.g. for Prometheus
+  # Operator selector matching):
+  #   release: prometheus
 
 resources: {}
   # limits:

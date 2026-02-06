@@ -1,0 +1,25 @@
+# prometheus-adapter Helm chart values for RLQS custom metrics.
+#
+# Install with:
+#   helm install prometheus-adapter prometheus-community/prometheus-adapter \
+#     -f deploy/prometheus-adapter/values.yaml
+#
+# This exposes rlqs_active_streams as a Pods custom metric so the HPA can
+# scale on it. The rule queries the raw gauge from each pod and presents it
+# as pods.custom.k8s.io/rlqs_active_streams.
+
+prometheus:
+  url: http://prometheus.monitoring.svc
+  port: 9090
+
+rules:
+  custom:
+    - seriesQuery: 'rlqs_active_streams{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)$"
+        as: "${1}"
+      metricsQuery: '<<.Series>>{<<.LabelMatchers>>}'
