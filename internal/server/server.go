@@ -107,8 +107,15 @@ type streamState struct {
 	metricDomain string // bounded label for Prometheus (set once at domain binding)
 	domainBound  bool
 
-	// subscriptions tracks bucket keys the client has reported on this stream.
-	subscriptions map[storage.BucketKey]struct{}
+	// subscriptions maps bucket keys to their BucketId protos.
+	// The BucketId is retained so proactive pushes can reconstruct reports.
+	subscriptions map[storage.BucketKey]*rlqspb.BucketId
+
+	// stream is the gRPC server stream for this connection.
+	stream rlqspb.RateLimitQuotaService_StreamRateLimitQuotasServer
+	// sendMu serializes calls to stream.Send across the receive loop and
+	// proactive push goroutines.
+	sendMu sync.Mutex
 }
 
 // NewRLQS creates a new RLQSServer with full protocol support.
@@ -136,11 +143,80 @@ func NewRLQS(logger *zap.Logger, store storage.BucketStore, engine quota.Engine,
 	return s
 }
 
-// SwapEngine atomically replaces the quota engine used for all subsequent
-// ProcessUsage calls. Active streams pick up the new engine on their next
-// message without interruption.
+// SwapEngine atomically replaces the quota engine and proactively pushes
+// fresh assignments to all active streams for their subscribed buckets.
+// This ensures clients receive updated policies immediately rather than
+// waiting until their next usage report.
 func (s *RLQSServer) SwapEngine(e quota.Engine) {
 	s.engine.Store(e)
+	go s.pushAssignments(e)
+}
+
+// pushAssignments iterates all active streams and sends fresh assignments
+// for every subscribed bucket using the provided engine. Errors on individual
+// streams are logged but do not affect other streams.
+func (s *RLQSServer) pushAssignments(e quota.Engine) {
+	// Snapshot the set of active streams under the server lock.
+	s.mu.Lock()
+	streams := make([]*streamState, 0, len(s.streams))
+	for ss := range s.streams {
+		streams = append(streams, ss)
+	}
+	s.mu.Unlock()
+
+	for _, ss := range streams {
+		ss.mu.Lock()
+		if !ss.domainBound || len(ss.subscriptions) == 0 {
+			ss.mu.Unlock()
+			continue
+		}
+		domain := ss.domain
+		metricDomain := ss.metricDomain
+		reports := make([]storage.UsageReport, 0, len(ss.subscriptions))
+		for _, bid := range ss.subscriptions {
+			reports = append(reports, storage.UsageReport{BucketId: bid})
+		}
+		stream := ss.stream
+		ss.mu.Unlock()
+
+		ctx := stream.Context()
+		engineCtx := ctx
+		var cancel context.CancelFunc
+		if s.engineTimeout > 0 {
+			engineCtx, cancel = context.WithTimeout(ctx, s.engineTimeout)
+		}
+
+		actions, err := e.ProcessUsage(engineCtx, domain, reports)
+		if cancel != nil {
+			cancel()
+		}
+		if err != nil {
+			s.logger.Error("push assignments: engine error",
+				zap.String("domain", domain), zap.Error(err))
+			continue
+		}
+		if len(actions) == 0 {
+			continue
+		}
+
+		metrics.AssignmentsTotal.WithLabelValues(metricDomain).Add(float64(len(actions)))
+
+		resp := &rlqspb.RateLimitQuotaResponse{
+			BucketAction: actions,
+		}
+		ss.sendMu.Lock()
+		err = stream.Send(resp)
+		ss.sendMu.Unlock()
+		if err != nil {
+			s.logger.Debug("push assignments: stream send error",
+				zap.String("domain", domain), zap.Error(err))
+			continue
+		}
+
+		s.logger.Debug("pushed assignments after engine swap",
+			zap.String("domain", domain),
+			zap.Int("buckets", len(actions)))
+	}
 }
 
 // SwapDomainClassifier atomically replaces the domain classifier used for
@@ -163,7 +239,8 @@ func Register(s *grpc.Server, logger *zap.Logger, store storage.BucketStore, eng
 // StreamRateLimitQuotas implements the bidirectional streaming RPC.
 func (s *RLQSServer) StreamRateLimitQuotas(stream rlqspb.RateLimitQuotaService_StreamRateLimitQuotasServer) error {
 	ss := &streamState{
-		subscriptions: make(map[storage.BucketKey]struct{}),
+		subscriptions: make(map[storage.BucketKey]*rlqspb.BucketId),
+		stream:        stream,
 	}
 
 	s.mu.Lock()
@@ -275,7 +352,7 @@ func (s *RLQSServer) handleMessage(
 				return status.Errorf(codes.ResourceExhausted,
 					"max buckets per stream exceeded (limit: %d)", s.maxBucketsPerStream)
 			}
-			ss.subscriptions[key] = struct{}{}
+			ss.subscriptions[key] = u.GetBucketId()
 		}
 		ss.mu.Unlock()
 
@@ -336,7 +413,7 @@ func (s *RLQSServer) handleMessage(
 		if a.GetAbandonAction() != nil {
 			key := storage.BucketKeyFromProto(a.GetBucketId())
 			ss.mu.Lock()
-			if _, exists := ss.subscriptions[key]; exists {
+			if _, subbed := ss.subscriptions[key]; subbed {
 				delete(ss.subscriptions, key)
 				ss.mu.Unlock()
 				scopedKey := storage.DomainScopedKey(ss.domain, key)
@@ -367,7 +444,10 @@ func (s *RLQSServer) handleMessage(
 	resp := &rlqspb.RateLimitQuotaResponse{
 		BucketAction: actions,
 	}
-	if err := stream.Send(resp); err != nil {
+	ss.sendMu.Lock()
+	err = stream.Send(resp)
+	ss.sendMu.Unlock()
+	if err != nil {
 		s.logger.Debug("stream send error", zap.Error(err))
 		return err
 	}
@@ -483,8 +563,8 @@ func New(logger *zap.Logger, store storage.BucketStore, engine quota.Engine, cfg
 	}
 }
 
-// SwapEngine atomically replaces the quota engine. Active streams pick up
-// the new engine on their next message.
+// SwapEngine atomically replaces the quota engine and proactively pushes
+// fresh assignments to all active streams.
 func (s *Server) SwapEngine(e quota.Engine) {
 	s.rlqsServer.SwapEngine(e)
 }

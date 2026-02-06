@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,17 +34,22 @@ import (
 // --- fakes ---
 
 type fakeStore struct {
+	mu      sync.Mutex
 	usages  []storage.UsageReport
 	removed []storage.BucketKey
 }
 
 func (f *fakeStore) RecordUsage(_ context.Context, _ string, r storage.UsageReport) error {
+	f.mu.Lock()
 	f.usages = append(f.usages, r)
+	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeStore) RemoveBucket(_ context.Context, _ string, key storage.BucketKey) error {
+	f.mu.Lock()
 	f.removed = append(f.removed, key)
+	f.mu.Unlock()
 	return nil
 }
 
@@ -920,6 +926,197 @@ func TestServerSwapEngine(t *testing.T) {
 	}
 	if resp.GetBucketAction()[0].GetQuotaAssignmentAction() == nil {
 		t.Fatal("expected assignment action after engine swap")
+	}
+}
+
+func TestSwapEnginePushesAssignmentsToExistingStreams(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+
+	bid := bucketID("name", "push-test")
+
+	// Initial engine returns an assignment so we can confirm the report was processed.
+	initialAction := &rlqspb.RateLimitQuotaResponse_BucketAction{
+		BucketId: bid,
+		BucketAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction_{
+			QuotaAssignmentAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{
+				AssignmentTimeToLive: durationpb.New(60 * time.Second),
+			},
+		},
+	}
+	eng := &fakeEngine{
+		actions: []*rlqspb.RateLimitQuotaResponse_BucketAction{initialAction},
+	}
+
+	srv := New(logger, st, eng, config.ServerConfig{
+		EngineTimeout: config.Duration{Duration: 5 * time.Second},
+	}, nil)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamRateLimitQuotas(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send initial report to subscribe to the bucket.
+	err = stream.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Recv the initial assignment — confirms the subscription is recorded.
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.GetBucketAction()[0].GetQuotaAssignmentAction().GetAssignmentTimeToLive().AsDuration(); got != 60*time.Second {
+		t.Fatalf("expected initial TTL 60s, got %v", got)
+	}
+
+	// Swap to a new engine with a different TTL.
+	newAction := &rlqspb.RateLimitQuotaResponse_BucketAction{
+		BucketId: bid,
+		BucketAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction_{
+			QuotaAssignmentAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{
+				AssignmentTimeToLive: durationpb.New(15 * time.Second),
+			},
+		},
+	}
+	newEngine := &fakeEngine{
+		actions: []*rlqspb.RateLimitQuotaResponse_BucketAction{newAction},
+	}
+	srv.SwapEngine(newEngine)
+
+	// The proactive push should send the new assignment without another client report.
+	resp, err = stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.GetBucketAction()) != 1 {
+		t.Fatalf("expected 1 pushed action, got %d", len(resp.GetBucketAction()))
+	}
+	got := resp.GetBucketAction()[0].GetQuotaAssignmentAction().GetAssignmentTimeToLive().AsDuration()
+	if got != 15*time.Second {
+		t.Fatalf("expected pushed TTL 15s, got %v", got)
+	}
+}
+
+func TestSwapEnginePushMultipleStreams(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	st := &fakeStore{}
+
+	// Initial engine returns no actions.
+	eng := &fakeEngine{actions: nil}
+
+	srv := New(logger, st, eng, config.ServerConfig{
+		EngineTimeout: config.Duration{Duration: 5 * time.Second},
+	}, nil)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(lis)
+	defer srv.GracefulStop()
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	client := rlqspb.NewRateLimitQuotaServiceClient(conn)
+	bid1 := bucketID("name", "bucket-a")
+	bid2 := bucketID("name", "bucket-b")
+
+	// Open stream 1 with bucket-a.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	stream1, err := client.StreamRateLimitQuotas(ctx1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = stream1.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid1, 10, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open stream 2 with bucket-b.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+
+	stream2, err := client.StreamRateLimitQuotas(ctx2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = stream2.Send(&rlqspb.RateLimitQuotaUsageReports{
+		Domain:            "envoy",
+		BucketQuotaUsages: []*rlqspb.RateLimitQuotaUsageReports_BucketQuotaUsage{usageReport(bid2, 20, 0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for server to process both subscriptions.
+	time.Sleep(100 * time.Millisecond)
+
+	// Swap to engine that returns actions for every report.
+	newEngine := &fakeEngine{
+		actions: []*rlqspb.RateLimitQuotaResponse_BucketAction{
+			{
+				BucketId: bid1, // Action has bid1 but fakeEngine ignores input anyway
+				BucketAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction_{
+					QuotaAssignmentAction: &rlqspb.RateLimitQuotaResponse_BucketAction_QuotaAssignmentAction{
+						AssignmentTimeToLive: durationpb.New(20 * time.Second),
+					},
+				},
+			},
+		},
+	}
+	srv.SwapEngine(newEngine)
+
+	// Both streams should receive proactive pushes.
+	resp1, err := stream1.Recv()
+	if err != nil {
+		t.Fatalf("stream1 recv: %v", err)
+	}
+	if len(resp1.GetBucketAction()) != 1 {
+		t.Fatalf("stream1: expected 1 action, got %d", len(resp1.GetBucketAction()))
+	}
+
+	resp2, err := stream2.Recv()
+	if err != nil {
+		t.Fatalf("stream2 recv: %v", err)
+	}
+	if len(resp2.GetBucketAction()) != 1 {
+		t.Fatalf("stream2: expected 1 action, got %d", len(resp2.GetBucketAction()))
 	}
 }
 
