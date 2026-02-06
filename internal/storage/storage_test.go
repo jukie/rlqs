@@ -78,7 +78,8 @@ func TestMemoryStorage_RecordUsage(t *testing.T) {
 	}
 
 	key := BucketKeyFromProto(bid)
-	state, ok := s.Get(key)
+	scopedKey := DomainScopedKey("test", key)
+	state, ok := s.Get(scopedKey)
 	if !ok {
 		t.Fatal("expected bucket to exist")
 	}
@@ -96,7 +97,7 @@ func TestMemoryStorage_RecordUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state, _ = s.Get(key)
+	state, _ = s.Get(scopedKey)
 	if state.Allowed != 15 || state.Denied != 3 {
 		t.Fatalf("expected accumulated state (15,3), got: %+v", state)
 	}
@@ -107,16 +108,76 @@ func TestMemoryStorage_RemoveBucket(t *testing.T) {
 	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "web"}}
 	key := BucketKeyFromProto(bid)
 
-	s.Update(key, 10, 2)
-
-	err := s.RemoveBucket(context.Background(), "test", key)
+	// Use RecordUsage to store with domain scoping
+	err := s.RecordUsage(context.Background(), "test", UsageReport{
+		BucketId:           bid,
+		NumRequestsAllowed: 10,
+		NumRequestsDenied:  2,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, ok := s.Get(key)
+	// Verify it was stored
+	scopedKey := DomainScopedKey("test", key)
+	if _, ok := s.Get(scopedKey); !ok {
+		t.Fatal("expected bucket to exist before removal")
+	}
+
+	err = s.RemoveBucket(context.Background(), "test", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := s.Get(scopedKey)
 	if ok {
 		t.Fatal("expected bucket to be removed")
+	}
+}
+
+func TestMemoryStorage_DomainIsolation(t *testing.T) {
+	s := NewMemoryStorage()
+	bid := &rlqspb.BucketId{Bucket: map[string]string{"name": "api"}}
+
+	// Record usage for domain1
+	err := s.RecordUsage(context.Background(), "domain1", UsageReport{
+		BucketId:           bid,
+		NumRequestsAllowed: 100,
+		NumRequestsDenied:  10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Record usage for domain2 with same bucket ID
+	err = s.RecordUsage(context.Background(), "domain2", UsageReport{
+		BucketId:           bid,
+		NumRequestsAllowed: 200,
+		NumRequestsDenied:  20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify they are stored separately
+	key := BucketKeyFromProto(bid)
+	domain1Key := DomainScopedKey("domain1", key)
+	domain2Key := DomainScopedKey("domain2", key)
+
+	state1, ok1 := s.Get(domain1Key)
+	if !ok1 {
+		t.Fatal("expected domain1 bucket to exist")
+	}
+	if state1.Allowed != 100 || state1.Denied != 10 {
+		t.Fatalf("expected domain1 state (100,10), got: %+v", state1)
+	}
+
+	state2, ok2 := s.Get(domain2Key)
+	if !ok2 {
+		t.Fatal("expected domain2 bucket to exist")
+	}
+	if state2.Allowed != 200 || state2.Denied != 20 {
+		t.Fatalf("expected domain2 state (200,20), got: %+v", state2)
 	}
 }
 

@@ -38,6 +38,19 @@ func BucketKeyFromProto(id *rlqspb.BucketId) BucketKey {
 	return BucketKey(sb.String())
 }
 
+// DomainScopedKey prefixes a bucket key with its domain to prevent collisions
+// across domains. Format: "domain\x1fbucketKey"
+func DomainScopedKey(domain string, key BucketKey) BucketKey {
+	if domain == "" {
+		return key
+	}
+	var sb strings.Builder
+	sb.WriteString(domain)
+	sb.WriteByte('\x1f') // unit separator between domain and bucket key
+	sb.WriteString(string(key))
+	return BucketKey(sb.String())
+}
+
 // UsageReport captures a single bucket's usage data from a client report.
 type UsageReport struct {
 	BucketId           *rlqspb.BucketId
@@ -122,14 +135,16 @@ func (s *MemoryStorage) All() map[BucketKey]UsageState {
 }
 
 // RecordUsage implements BucketStore by accumulating usage into the in-memory store.
-func (s *MemoryStorage) RecordUsage(_ context.Context, _ string, report UsageReport) error {
+func (s *MemoryStorage) RecordUsage(_ context.Context, domain string, report UsageReport) error {
 	key := BucketKeyFromProto(report.BucketId)
-	s.Update(key, report.NumRequestsAllowed, report.NumRequestsDenied)
+	scopedKey := DomainScopedKey(domain, key)
+	s.Update(scopedKey, report.NumRequestsAllowed, report.NumRequestsDenied)
 	return nil
 }
 
 // RemoveBucket implements BucketStore by removing the bucket from the in-memory store.
-func (s *MemoryStorage) RemoveBucket(_ context.Context, _ string, key BucketKey) error {
-	s.Reset(key)
+func (s *MemoryStorage) RemoveBucket(_ context.Context, domain string, key BucketKey) error {
+	scopedKey := DomainScopedKey(domain, key)
+	s.Reset(scopedKey)
 	return nil
 }

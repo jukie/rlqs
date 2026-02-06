@@ -118,7 +118,8 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 
 	// Verify storage accumulated the report
 	key := storage.BucketKeyFromProto(bid)
-	state, ok := store.Get(key)
+	scopedKey := storage.DomainScopedKey("test", key)
+	state, ok := store.Get(scopedKey)
 	if !ok {
 		t.Fatal("bucket not in storage")
 	}
@@ -146,7 +147,7 @@ func TestIntegration_FullRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state, _ = store.Get(key)
+	state, _ = store.Get(scopedKey)
 	if state.Allowed != 50 || state.Denied != 3 {
 		t.Fatalf("expected accumulated state (50,3), got: %+v", state)
 	}
