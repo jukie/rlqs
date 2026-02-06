@@ -59,13 +59,13 @@ serviceMonitor:
   # Operator selector matching):
   #   release: prometheus
 
-resources: {}
-  # limits:
-  #   cpu: 500m
-  #   memory: 256Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
 
 nodeSelector: {}
 tolerations: []
@@ -74,6 +74,24 @@ podAnnotations: {}
 podLabels: {}
 
 serviceAccount:
-  create: false
+  create: true
   name: ""
   annotations: {}
+
+networkPolicy:
+  enabled: false
+  ingress:
+    from: []
+    # - namespaceSelector:
+    #     matchLabels:
+    #       name: envoy-gateway
+    # - podSelector:
+    #     matchLabels:
+    #       app: envoy
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels: {}

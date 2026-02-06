@@ -42,6 +42,21 @@ spec:
                   matchLabels:
                     {{- include "rlqs.selectorLabels" . | nindent 20 }}
                 topologyKey: kubernetes.io/hostname
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        - maxSkew: {{ .maxSkew }}
+          topologyKey: {{ .topologyKey }}
+          whenUnsatisfiable: {{ .whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- if .labelSelector.matchLabels }}
+              {{- toYaml .labelSelector.matchLabels | nindent 14 }}
+              {{- else }}
+              {{- include "rlqs.selectorLabels" $ | nindent 14 }}
+              {{- end }}
+        {{- end }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -68,6 +83,12 @@ spec:
               port: metrics
             initialDelaySeconds: 3
             periodSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            failureThreshold: 30
+            periodSeconds: 2
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
